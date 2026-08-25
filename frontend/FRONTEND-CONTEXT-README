@@ -1,0 +1,114 @@
+PROJECT: Multi-Agent Airport Operations System — FRONTEND SPEC
+PURPOSE OF THIS FILE: Give a teammate (or any LLM assisting them) complete, standalone context to build the frontend without needing to read the backend context file. This covers what the frontend must display, what data it receives, and why the project is architected this way.
+
+=== WHAT THIS PROJECT IS ===
+A simulated airport operations system driven by 5 backend AI agents (Gate, Ground Crew, ATS/schedule tracking, Disruption, Orchestrator) coordinating via a shared state object, running as a time-stepped simulation (not real-time/live airport data, a scripted scenario). It's a portfolio/resume project, the frontend's job is to make the agents' coordination and reasoning VISIBLE, not just show a static airport dashboard. The single most important thing the frontend must nail: when a disruption hits, the viewer should be able to SEE the system react, gates reassigned, crew reshuffled, conflicts raised and resolved, in near real time, with a readable trail of WHY each decision was made.
+
+=== TECH STACK ===
+React: 19
+Vite: 8.1.5
+Package manager: uv is for the Python backend only; frontend uses standard npm/yarn/pnpm (not yet decided which, default to npm unless teammate prefers otherwise)
+Backend: FastAPI (Python), exposes REST endpoints + a websocket for live state push
+No CSS framework has been decided yet, teammate's choice, keep it simple given the 1-week timeline
+
+=== DATA MODEL THE FRONTEND CONSUMES ===
+The backend's single source of truth is one object called AirportStatus, pushed over a websocket on every simulation "tick." This is the ONLY object the frontend needs to render the entire UI. Exact shape (field names are final, confirmed, do not rename):
+
+AirportStatus:
+  current_tick: int                        # simulation step counter, starts at 0
+  flights: dict[flight_id -> Flight]
+  crew: dict[crew_id -> CrewMember]
+  gates: dict[gate_id -> Gate]
+  open_disruptions: list[DisruptionEvent]
+  open_conflicts: list[Conflict]
+  decision_log: list[DecisionLogEntry]      # THIS is what feeds the live reasoning trace, see below
+
+Flight:
+  flight_id: str
+  airline: str
+  aircraft_type: "NARROW_BODY" | "WIDE_BODY"
+  scheduled_arrival: datetime (ISO string over the wire)
+  scheduled_departure: datetime
+  actual_arrival: datetime | null
+  actual_departure: datetime | null
+  status: "SCHEDULED" | "IN_AIR" | "LANDED" | "AT_GATE" | "READY_FOR_PUSHBACK" | "DEPARTED" | "CANCELLED"
+  assigned_gate: str | null                 # gate_id
+  assigned_crew: list[str]                  # crew_ids
+  turnaround_time: int                      # minutes, always > 0
+  is_delayed: bool                          # server-computed, true if actual time ran later than scheduled
+
+CrewMember:
+  crew_id: str
+  role: "BAGGAGE" | "PUSHBACK" | "CLEANING"
+  available: bool
+  assigned_flight: str | null               # flight_id
+  shift_minutes_remaining: int
+
+Gate:
+  gate_id: str
+  supports_wide_body: bool
+  gate_status: "OPEN" | "OCCUPIED" | "UNAVAILABLE"
+  assigned_flight: str | null               # flight_id
+
+DisruptionEvent:
+  event_id: str
+  disruption_type: "WEATHER" | "TECH_ISSUE" | "CREW_SHORTAGE"
+  trigger_time: datetime
+  severity: int 1-5                         # 1 = minor/localized, 5 = critical system-wide halt
+  disruption_description: str               # human-readable, safe to display directly
+  affected_flights: list[str]               # flight_ids
+  resolved: bool
+
+Conflict:
+  conflict_id: str
+  agent_id: str                             # which agent raised it, e.g. "gate_agent"
+  conflict_description: str                 # human-readable, safe to display directly
+  resolved: bool
+  affected_flights: list[str]
+
+DecisionLogEntry:                           # THE most important object for the UI's core value prop
+  tick: int                                 # which simulation tick this happened on
+  agent_id: str                             # which agent made this decision
+  action: str                               # free-text label, e.g. "gate_assignment", "conflict_raised", "conflict_resolved", "crew_reassigned" — NOT a fixed enum, new labels may appear, don't hardcode a switch statement that breaks on unknown values, always have a default rendering path
+  detail: str                               # human-readable sentence, safe to display directly, this is literally the sentence shown in the reasoning trace feed
+  affected_flights: list[str]
+
+Important: decision_log is APPEND-ONLY and grows for the entire simulation run, it is not reset per tick. The frontend should treat it as a scrollable/filterable history, not a transient toast that disappears.
+
+=== API CONTRACT (proposed by backend, not yet implemented, confirm with backend teammate before hardcoding) ===
+REST (initial load / manual refresh):
+  GET /flights
+  GET /gates
+  GET /crew
+  GET /decisions        -> returns decision_log
+
+Websocket (live updates, primary data source once connected):
+  Single connection, server pushes the full AirportStatus object on every tick (not a diff). Frontend should treat each incoming message as the new full state and re-render accordingly, simplest approach, avoids sync bugs, acceptable since scenario size is small (15-20 flights).
+
+Since none of this is implemented yet, the frontend teammate should build against a mocked/hardcoded AirportStatus JSON object first (matching the exact schema above) and swap in the real websocket connection once the backend exposes it. This lets frontend work proceed in parallel with backend, which is the whole point of splitting these two tracks.
+
+=== REQUIRED UI COMPONENTS (planned, names not mandatory but roles are) ===
+1. Timeline / Gate Board — shows all flights against gates and time, visualizes assignments and occupancy at a glance. This is the "airport at a glance" view.
+2. Decision Log / Reasoning Trace feed — chronological, scrollable list rendering decision_log entries as readable sentences ("Gate Agent reassigned UA204 from Gate 12 to Gate 7"), ideally color-coded or icon-tagged by agent_id, and filterable by agent or by action type. This is the single most important component for demo/interview purposes, it's what makes the multi-agent coordination visible rather than just implied.
+3. Disruption Panel — shows open_disruptions, their severity (color-code by severity level, 1 mild to 5 severe), affected flights, and resolved/unresolved status. Should make it obvious when a disruption is actively being handled vs already resolved.
+4. Conflict indicator — shows open_conflicts, similar treatment to disruptions, which agent raised it, what it's about, resolved status.
+5. Flight/Gate/Crew detail views — clicking a flight, gate, or crew member should show its full current state (status, assignments, etc.), useful for drilling into "why is this specific flight delayed."
+
+=== THE DEMO MOMENT THE FRONTEND MUST SUPPORT ===
+The core interview-facing demo is: a scripted disruption fires (e.g. a weather event hits mid-simulation), and the viewer watches, in the UI, as gates get reassigned, crew gets reshuffled, conflicts get raised and resolved, and the Decision Log fills up with the reasoning behind each change, all within seconds. The frontend's job is to make this moment legible: use tick number or a live-updating counter so it's clear time is progressing, make new decision_log entries visually distinct as they arrive (e.g. brief highlight/fade-in), and keep the disruption panel and decision log visible simultaneously (not buried in separate tabs) so cause (disruption) and effect (agent decisions) can be seen side by side.
+
+=== WHAT NOT TO BUILD ===
+- No user authentication/login, not in scope
+- No persistence beyond the current simulation run, no need for a database on the frontend side
+- No real external data (weather APIs, live flight data), everything is simulated/scripted
+- No need to support multiple concurrent simulation runs or historical run comparison, single live run only
+
+=== ARCHITECTURE CONTEXT (why the backend is built this way, relevant to frontend integration decisions) ===
+The backend's 5 agents (Gate, Crew, ATS, Disruption, Orchestrator) each have swappable decision logic, they may start rule-based and later get replaced with ML-based versions, but this is invisible to the frontend, the AirportStatus shape and decision_log format do not change regardless of what's making decisions on the backend. The frontend does not need to know or care whether a given agent's decision was rule-based or model-based, it should render decision_log entries identically either way.
+
+=== OPEN ITEMS FOR FRONTEND TEAMMATE TO CONFIRM WITH BACKEND ===
+- Exact websocket URL/endpoint path and message framing (not yet built)
+- Whether initial full-state load happens via REST GET before websocket connects, or websocket sends full state on connect
+- CSS/styling approach (no framework decided yet)
+- Package manager choice for frontend (npm assumed, not confirmed)
+- Whether tick timing is fixed-interval (e.g. one tick per second) or event-driven (ticks fire only when something changes), affects whether frontend needs its own animation/polling timer

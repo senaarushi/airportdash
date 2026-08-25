@@ -1,0 +1,136 @@
+<svg viewBox="0 0 1150 900" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowWrite" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1150" height="900" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="575" y="45" text-anchor="middle" font-size="26" font-weight="700" fill="#0f172a">agents/graph.py — LangGraph Topology</text>
+  <text x="575" y="70" text-anchor="middle" font-size="14" fill="#64748b">One compiled graph, invoked once per Simulator tick — no cycles inside the graph itself</text>
+
+  <!-- START node -->
+  <circle cx="575" cy="130" r="30" fill="#334155"/>
+  <text x="575" y="136" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">START</text>
+
+  <!-- Fan-out arrows -->
+  <path d="M 545,150 L 190,205" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 565,158 L 425,205" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 585,158 L 725,205" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 605,150 L 960,205" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="575" y="185" text-anchor="middle" font-size="12" fill="#94a3b8" font-style="italic">fan-out: all 4 branches run concurrently</text>
+
+  <!-- Gate Agent -->
+  <rect x="65" y="205" width="220" height="130" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="175" y="232" text-anchor="middle" font-size="16" font-weight="700" fill="#1e3a8a">Gate Agent</text>
+  <rect x="115" y="242" width="120" height="20" rx="10" fill="#2563eb"/>
+  <text x="175" y="257" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">RULE-BASED</text>
+  <text x="175" y="280" text-anchor="middle" font-size="11.5" fill="#1e3a8a">LANDED flights with no</text>
+  <text x="175" y="296" text-anchor="middle" font-size="11.5" fill="#1e3a8a">assigned_gate →</text>
+  <text x="175" y="312" text-anchor="middle" font-size="11.5" fill="#1e3a8a">GateAssignmentProposal</text>
+  <text x="175" y="328" text-anchor="middle" font-size="10.5" fill="#3b82f6">(always emits, even if None)</text>
+
+  <!-- Crew Agent -->
+  <rect x="315" y="205" width="220" height="130" rx="12" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="425" y="232" text-anchor="middle" font-size="16" font-weight="700" fill="#4c1d95">Crew Agent</text>
+  <rect x="365" y="242" width="120" height="20" rx="10" fill="#7c3aed"/>
+  <text x="425" y="257" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">RULE-BASED</text>
+  <text x="425" y="280" text-anchor="middle" font-size="11.5" fill="#4c1d95">AT_GATE flights with no</text>
+  <text x="425" y="296" text-anchor="middle" font-size="11.5" fill="#4c1d95">assigned_crew →</text>
+  <text x="425" y="312" text-anchor="middle" font-size="11.5" fill="#4c1d95">CrewAssignmentProposal</text>
+  <text x="425" y="328" text-anchor="middle" font-size="10.5" fill="#8b5cf6">(always emits, even if [])</text>
+
+  <!-- ATS Agent -->
+  <rect x="565" y="205" width="220" height="130" rx="12" fill="#cffafe" stroke="#0891b2" stroke-width="2"/>
+  <text x="675" y="232" text-anchor="middle" font-size="16" font-weight="700" fill="#155e75">ATS Agent</text>
+  <rect x="615" y="242" width="120" height="20" rx="10" fill="#0891b2"/>
+  <text x="675" y="257" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">RULE-BASED</text>
+  <text x="675" y="280" text-anchor="middle" font-size="11.5" fill="#155e75">Active flights running</text>
+  <text x="675" y="296" text-anchor="middle" font-size="11.5" fill="#155e75">behind schedule →</text>
+  <text x="675" y="312" text-anchor="middle" font-size="11.5" fill="#155e75">ScheduleUpdateProposal</text>
+  <text x="675" y="328" text-anchor="middle" font-size="10.5" fill="#22d3ee">(flags once per flight only)</text>
+
+  <!-- Disruption Agent -->
+  <rect x="815" y="205" width="220" height="130" rx="12" fill="#ffedd5" stroke="#ea580c" stroke-width="2"/>
+  <text x="925" y="232" text-anchor="middle" font-size="16" font-weight="700" fill="#7c2d12">Disruption Agent</text>
+  <rect x="855" y="242" width="140" height="20" rx="10" fill="#ea580c"/>
+  <text x="925" y="257" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">LLM-POWERED</text>
+  <text x="925" y="280" text-anchor="middle" font-size="11.5" fill="#7c2d12">Unresolved open_disruptions</text>
+  <text x="925" y="296" text-anchor="middle" font-size="11.5" fill="#7c2d12">→ re-escalated with LLM</text>
+  <text x="925" y="312" text-anchor="middle" font-size="11.5" fill="#7c2d12">priority/reasoning each tick</text>
+  <text x="925" y="328" text-anchor="middle" font-size="10.5" fill="#fb923c">(does not spawn new events)</text>
+
+  <!-- read-only snapshot label -->
+  <text x="575" y="365" text-anchor="middle" font-size="12" fill="#94a3b8" font-style="italic">all 4 read state.snapshot only — never state.board</text>
+
+  <!-- Fan-in arrows to Orchestrator -->
+  <path d="M 190,335 L 470,420" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 430,335 L 520,420" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 680,335 L 630,420" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 930,335 L 690,420" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="575" y="400" text-anchor="middle" font-size="12" fill="#94a3b8" font-style="italic">fan-in: waits for all 4, merges proposals via operator.add reducer</text>
+
+  <!-- Orchestrator -->
+  <rect x="400" y="420" width="350" height="140" rx="14" fill="#fef3c7" stroke="#b45309" stroke-width="2.5"/>
+  <text x="575" y="452" text-anchor="middle" font-size="18" font-weight="700" fill="#78350f">Orchestrator</text>
+  <rect x="490" y="463" width="170" height="20" rx="10" fill="#b45309"/>
+  <text x="575" y="478" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">SOLE WRITER + LLM CONFLICTS</text>
+  <text x="575" y="502" text-anchor="middle" font-size="12" fill="#78350f">Detects &amp; resolves gate/crew conflicts,</text>
+  <text x="575" y="518" text-anchor="middle" font-size="12" fill="#78350f">applies every proposal to the LIVE</text>
+  <text x="575" y="534" text-anchor="middle" font-size="12" fill="#78350f">Blackboard, writes decision_log</text>
+  <text x="575" y="551" text-anchor="middle" font-size="10.5" fill="#d97706">(the only node allowed to touch state.board)</text>
+
+  <!-- Orchestrator -> END -->
+  <path d="M 575,560 L 575,620" stroke="#b45309" stroke-width="2.5" fill="none" marker-end="url(#arrowWrite)"/>
+  <text x="600" y="592" font-size="11" fill="#b45309" font-style="italic">writes board</text>
+
+  <!-- END node -->
+  <circle cx="575" cy="655" r="30" fill="#334155"/>
+  <text x="575" y="661" text-anchor="middle" font-size="17" font-weight="700" fill="#ffffff">END</text>
+
+  <!-- GraphState panel -->
+  <rect x="65" y="620" width="330" height="220" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="230" y="648" text-anchor="middle" font-size="15" font-weight="700" fill="#0f172a">GraphState (Pydantic model)</text>
+  <line x1="80" y1="660" x2="380" y2="660" stroke="#e2e8f0" stroke-width="1"/>
+
+  <text x="80" y="682" font-size="12.5" font-weight="600" fill="#1e3a8a">snapshot: AirportStatus</text>
+  <text x="80" y="698" font-size="11" fill="#475569">detached read-only copy, taken once</text>
+  <text x="80" y="712" font-size="11" fill="#475569">per tick — what all 4 agents see</text>
+
+  <text x="80" y="736" font-size="12.5" font-weight="600" fill="#78350f">board: Blackboard</text>
+  <text x="80" y="752" font-size="11" fill="#475569">the LIVE, mutable shared instance —</text>
+  <text x="80" y="766" font-size="11" fill="#475569">only orchestrator_node writes to it</text>
+
+  <text x="80" y="790" font-size="12.5" font-weight="600" fill="#065f46">proposals: list[AgentProposal]</text>
+  <text x="80" y="806" font-size="11" fill="#475569">Annotated[..., operator.add] — the</text>
+  <text x="80" y="820" font-size="11" fill="#475569">reducer that merges all 4 branches'</text>
+  <text x="80" y="834" font-size="11" fill="#475569">returned proposal lists into one</text>
+
+  <!-- Legend panel -->
+  <rect x="755" y="620" width="330" height="220" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="920" y="648" text-anchor="middle" font-size="15" font-weight="700" fill="#0f172a">Legend</text>
+  <line x1="770" y1="660" x2="1070" y2="660" stroke="#e2e8f0" stroke-width="1"/>
+
+  <rect x="770" y="674" width="18" height="18" rx="4" fill="#2563eb"/>
+  <text x="798" y="688" font-size="12" fill="#334155">Rule-based decision (fast, deterministic)</text>
+
+  <rect x="770" y="702" width="18" height="18" rx="4" fill="#ea580c"/>
+  <text x="798" y="716" font-size="12" fill="#334155">LLM-powered decision (Gemini)</text>
+
+  <line x1="770" y1="738" x2="795" y2="738" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="805" y="742" font-size="12" fill="#334155">Graph edge (proposal flow)</text>
+
+  <line x1="770" y1="762" x2="795" y2="762" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrowWrite)"/>
+  <text x="805" y="766" font-size="12" fill="#334155">Shared-state write (orchestrator only)</text>
+
+  <text x="770" y="796" font-size="11.5" fill="#64748b" font-style="italic">Simulator's tick loop lives OUTSIDE</text>
+  <text x="770" y="812" font-size="11.5" fill="#64748b" font-style="italic">this graph — the "loop forever" part</text>
+  <text x="770" y="828" font-size="11.5" fill="#64748b" font-style="italic">is not a cycle inside LangGraph here.</text>
+
+  <text x="575" y="880" text-anchor="middle" font-size="11" fill="#94a3b8">airport-ops · agents/graph.py</text>
+</svg>

@@ -1,0 +1,435 @@
+PROJECT: Multi-Agent Airport Operations System
+PURPOSE: AAI (Airports Authority of India) AI Intern portfolio project. No formal rubric/evaluation from internship, self-directed. Goal: strong resume/interview-worthy piece to aid future GenAI/agentic AI internship applications.
+REPO LOCATION: D:\Projects\airport-ops (user's local machine, accessed read-only via Filesystem MCP connector, unless user explicitly grants write access for a specific task). This context file lives separately and must be manually re-synced/updated on request ("update context"); it does not auto-read the repo.
+
+=== TIMELINE / PRIORITY (CRITICAL, OVERRIDES ALL EARLIER SCOPE DECISIONS) ===
+The original 1-week timeline is NO LONGER A CONSTRAINT. User has explicitly stated: prioritize resume + interview quality and technical depth over speed; do not suggest cutting scope or simplifying architecture for time. Any earlier decision in this file justified by "1-week timeline" should be read as SUPERSEDED unless otherwise noted below. Do not reintroduce time-pressure-based simplification suggestions.
+
+Also CRITICAL: the simulation must be architected to closely resemble real-world data so that real data feeds can be plugged in later WITHOUT structural changes. Do not build mock-only shortcuts that would need rework for real data. This has already driven concrete fixes (see Decision Log #14-15).
+
+=== DECISION LOG (in order) ===
+1. Chose multi-agent airport ops over grievance retrieval agent (alternative considered). Reason: adds "agentic systems" portfolio signal.
+2. Originally scoped 4 agents (Orchestrator, ATS, Gate, Ground Crew), added 5th: Disruption/Weather agent. Reason: other 4 are resource allocators; Disruption agent is an event generator, forces real replanning, gives Orchestrator something meaningful to resolve, makes the best demo moment.
+3. [SUPERSEDED by priority pivot, kept for history only] User originally wanted a 1-week timeline; agreed compression included no ML/RL decision logic initially, no live data feeds, no runtime toggle for swapping logic.
+4. User pushed back on cutting scope even under the original 1-week framing: wants ALL of ML-based decision logic per agent, custom React frontend, richer multi-scenario simulation.
+5. RESOLUTION (agreed pattern, STILL ACTIVE): Make everything PLUGGABLE.
+   - LangGraph is NON-NEGOTIABLE for agent orchestration.
+   - React frontend is built IN PARALLEL, does not block backend, own timeline.
+   - ML vs rule-based logic is the pluggable part: build with rule-based logic in decisions/*.py files first, swap file contents later for model-based versions. NOT a runtime toggle, user explicitly wants file-swap only. Same function signature in/out, nothing else in codebase changes when swapped.
+6. Architecture principle locked: separate "agent shell" (LangGraph node, state/message passing, plumbing, NEVER changes) from "decision logic" (the swappable rule-based/ML function, ONLY thing that changes).
+7. SECOND ARCHITECTURE PRINCIPLE LOCKED: Pydantic schemas in core/models.py are PURE DATA HOLDERS ONLY. No business logic, no mutation methods that change business state, no side effects beyond input normalization/validation. All logic that changes field values (assigning gates, resolving conflicts, cancelling flights, clearing crew/gate links, etc.) is owned exclusively by agents, never by the schema layer. Exceptions in place, both considered consistent with this principle since they normalize/derive rather than make business decisions: `Flight.is_delayed` (read-only computed_field deriving a bool from existing timestamps) and the timezone-normalization validators added in Decision #14 (input normalization, not business logic).
+8. [REVERSED, see #16] Event-bus/pub-sub design was originally dropped in favor of AirportStatus alone as shared state. This has been REVERSED, see Decision #16, both EventBus and Blackboard/AirportStatus are now kept, deliberately, as complementary layers.
+9. DecisionLogEntry added to schema to support the frontend's live reasoning trace, implemented as a nested Pydantic model on AirportStatus.decision_log, appended to by agents each tick (now via Blackboard.log_decision(), see #16).
+10. Gate blocking reason field (optional string explaining why a gate is UNAVAILABLE) was proposed but SKIPPED for now. Not implemented. Revisit only if a disruption scenario needs to block a gate independently of a linked DisruptionEvent's own description.
+11. Flight cancellation (CANCELLED status) confirmed IN SCOPE and added to FlightStatus enum.
+12. DisruptionSeverity confirmed to need numeric comparison (e.g. "if severity >= LEVEL_3") and was converted from a plain str Enum to an IntEnum, each level backed by its integer value (LEVEL_1=1 ... LEVEL_5=5), enabling direct comparison operators.
+13. GateStatus given a third state for blocked/unusable gates; user's final chosen name is UNAVAILABLE (not BLOCKED/CLOSED).
+14. [Real-world-data fix] core/models.py datetime fields were naive (no timezone). Real ops/flight data feeds are virtually always timezone-aware; mixing naive mock timestamps with aware real timestamps causes a hard TypeError on comparison (e.g. in is_delayed). FIXED: added a shared `_coerce_utc()` normalizer used via field_validator (mode="before") on every datetime field across Flight and DisruptionEvent. Naive input is tagged UTC, aware input is converted to UTC. Mock and real data are now guaranteed comparable.
+15. [Real-world-data fix] data/seed_flights.py previously generated naive datetimes and fixed (not ranged) turnaround times (exactly 45 or 90 minutes). FIXED: base_time is now timezone-aware UTC (matching #14); turnaround times are now randomized ranges (35-55 min narrow-body, 75-110 min wide-body) to resemble real operational variability instead of two constants. Also added an optional `seed` parameter to generate_mock_flights() (used as seed=42 in __main__) for reproducible demo runs, since an unseeded schedule differs every run, bad for a repeatable live demo and for reproducing bugs. Noted explicitly in code comments: any future real-data loader should share the same `list[Flight]` return contract as generate_mock_flights()/save_flights_to_json(), making mock-vs-real a drop-in swap.
+16. [ARCHITECTURE REVERSAL, post priority-pivot] Given the quality-over-deadline priority, reconsidered event-bus-vs-shared-state as a false binary. FINAL DECISION: keep BOTH, deliberately, as complementary layers:
+    - AirportStatus/Blackboard = single source of truth for actual state (gates, flights, crew, disruptions, conflicts, decision_log).
+    - EventBus = decoupled notification layer (agents/frontend get notified something happened without hard-wired references to each other).
+    This is the stronger, more defensible-in-interview pattern versus dropping one for simplicity.
+17. Agent nodes will be ASYNC, not sync. Reasoning: the pluggable decision layer will eventually call real model/LLM APIs (network I/O-bound), building async from the start avoids retrofitting every agent node later. EventBus.publish is already async (uses asyncio.gather), this is now consistent end to end.
+18. [Concurrency fix, follows from #17] Running agents concurrently via asyncio.gather creates a real race condition risk if multiple coroutines mutate the same Blackboard object in the same tick (e.g. two agents both appending to decision_log, or both writing to gates). FIXED: added `_lock: asyncio.Lock` as a PrivateAttr on Blackboard (exposed via a `.lock` property, since asyncio.Lock can't be a normal Pydantic field). `log_decision()` is now `async def` and lock-protected. Any agent code mutating Blackboard fields directly (not just via log_decision) should acquire `async with board.lock:` for that mutation, this pattern is documented in the Blackboard docstring but not yet enforced everywhere since agent files are still empty stubs.
+19. RESOLVED: single-writer pattern adopted. Only the Orchestrator ever mutates Blackboard/AirportStatus directly. Gate, Crew, ATS, and Disruption agents never write shared state, they only ever return a typed AgentProposal subclass (see core/proposals.py, Decision #21). Orchestrator collects all proposals each tick, detects conflicts between them (e.g. two GateAssignmentProposals for the same gate_id), creates/resolves Conflict records, and is the sole writer to Blackboard. Reasoning: correctness by construction rather than by discipline, eliminates the distributed-locking race-condition risk entirely rather than merely guarding against it, and makes "Orchestrator resolves conflicts raised by other agents" literally true rather than aspirational, since the conflict only exists because Orchestrator synthesized it from independent, non-coordinating proposals. This was the explicit tradeoff decision once the quality-over-deadline priority was set (Decision #16/#17/#18 all feed into this).
+20. Resume bullets for this project have been drafted (see RESUME BULLETS section below) for placement under the AAI AI Intern experience entry (not as a separate Projects entry), in simple present tense (role/project both ongoing), matching the tense convention used elsewhere on the resume once finished, but present tense intentionally chosen now since neither the internship nor the project is complete.
+21. core/proposals.py written and confirmed placed as its own file (not folded into models.py), since proposals are ephemeral per-tick messages, a different category from AirportStatus's persistent domain state, even though both are pure Pydantic data. Contains a shared AgentProposal base class (proposal_id via uuid4, agent_id, tick, reasoning) that GateAssignmentProposal, CrewAssignmentProposal, ScheduleUpdateProposal, and DisruptionInjectionProposal all inherit from, letting Orchestrator's intake be typed as list[AgentProposal]. proposal_id is agent-generated (uuid4), not centrally assigned, to keep agents fully independent. ScheduleUpdateProposal's actual_arrival/actual_departure reuse the same _coerce_utc UTC-normalization from models.py (imported directly, noted as a private-by-convention function; promoting it to a shared core/validators.py was flagged as an optional future cleanup, not done yet). Exact schema in the file-by-file ground truth section below.
+22. core/simulator.py written. Owns the "world clock", ground-truth time progression and its direct physical consequences (flight status lifecycle transitions, scripted disruptions firing at their trigger_time), deliberately separate from agent decision-making (gate/crew assignment, conflict resolution, which remain Orchestrator/agent territory). This resolves an apparent tension with the single-writer principle (#19): Simulator is sole writer of world-clock-driven state during its own sequential phase each tick, Orchestrator is sole writer of decision-driven state during the concurrent agent-execution phase that follows, the two phases never overlap in time so there's no contention between the two "single writers." Simulator takes agent invocation as an injected async callback (`on_tick`) rather than importing agents/graph.py directly, meaning simulator.py has zero dependency on agent code and is fully written, runnable, and testable in isolation right now, before a single agent file exists. Known current limitation, intentional: a flight only advances LANDED -> AT_GATE once some agent has actually set assigned_gate; with on_tick=None (no agents running yet), flights will stall at LANDED indefinitely, this is expected until the agent graph exists and actually assigns gates. Also contains one hardcoded assumption flagged for future revisit: a fixed 10-minute taxi/landing buffer after scheduled_arrival before a flight transitions IN_AIR -> LANDED (a real ADS-B/telemetry feed would replace this with an actual observed landing event).
+23. tests/test_simulator.py written. Covers full flight lifecycle (SCHEDULED->IN_AIR->LANDED->AT_GATE->READY_FOR_PUSHBACK->DEPARTED), the intentional LANDED-stall-without-gate-assignment behavior, gate-freeing on departure, CANCELLED flights never progressing, disruption staging/injection timing (including a negative test confirming no early injection), the on_tick callback contract, and both run()/run_until() loop variants. Requires pytest and pytest-asyncio, NEITHER is currently in requirements.txt, must be added before this file can run. Uses @pytest.mark.asyncio explicitly on every async test (works regardless of whether asyncio_mode=auto is configured). One subtlety documented in the test file itself: disruption trigger_time is checked against sim_time BEFORE it's advanced each tick, so a disruption N minutes out takes more ticks to fire than a naive N/tick_duration calculation would suggest.
+24. data/seed_disruptions.py written. generate_mock_disruptions(flights: list[Flight], seed=None) -> list[DisruptionEvent] takes an explicit flights parameter (does not generate its own), matching the real-world-data-readiness principle: works identically whether flights came from generate_mock_flights() or a real schedule later. Produces exactly 3 scripted scenarios, each targeting a different agent-stress case: (1) DIS-WEATHER-001, LEVEL_4, hits the bottleneck cluster of ~5 flights seed_flights.py deliberately arrives together within the first 15 minutes, triggered 25 minutes into the schedule (after they've landed and are occupying gates/crew), this is the designated demo centerpiece for simultaneous multi-flight cascading replanning; (2) DIS-TECH-001, LEVEL_2, hits one isolated later flight, tests that the system doesn't over-react to a minor localized issue; (3) DIS-CREW-001, LEVEL_3, hits two non-adjacent flights, tests crew-specific contention independent of gate conflicts. save_disruptions_to_json() mirrors seed_flights.py's save pattern, documented as the same contract a future real disruption feed (e.g. live NOTAM/weather API) should satisfy. __main__ block imports generate_mock_flights from seed_flights.py (both using seed=42) so disruptions always reference real, existing flight_ids and the two generators stay mutually consistent and reproducible run to run.
+25. Graph topology CONFIRMED via implementation (user answered directly: Pydantic GraphState, agent shells only for this pass, and asked Claude to recommend on read-isolation). GraphState (in agents/graph.py) holds THREE fields: `snapshot: AirportStatus` (read-only, detached copy taken fresh each tick via `AirportStatus.model_validate(board.model_dump())`), `board: Blackboard` (the live, mutable reference), and `proposals: Annotated[list[AgentProposal], operator.add]` (accumulates across the 4 concurrent agents via LangGraph's reducer pattern, starts empty each tick since GraphState is constructed fresh per tick). Fan-out/fan-in confirmed: START branches to gate_agent, crew_agent, ats_agent, disruption_agent concurrently, all four converge on orchestrator, orchestrator -> END. Graph-per-tick confirmed: one compiled_graph.ainvoke() call = one Simulator tick, no internal LangGraph cycles, temporal looping stays owned by Simulator.
+26. Read-isolation RESOLVED: read-only snapshot (not live reference + convention), per Claude's recommendation, given long-term scalability/stability priority. Reasoning: (a) extends the same "prevent by construction, not discipline" principle that justified single-writer in the first place, a snapshot means agents structurally CANNOT mutate shared state, not merely "shouldn't"; (b) scales toward a real distributed system for free, if agents ever split across processes/services, live references break entirely and snapshots already anticipate that; (c) aligns with the pluggable LLM-based decision layer, which will need serializable state for API calls anyway; (d) copy cost is negligible at this scale (15-20 flights). Implementation detail: the 4 non-Orchestrator agents are typed to receive `AirportStatus`, not `Blackboard`, so they have no type-level access to `.lock` or `.log_decision()` at all, enforced by the type system, not just convention.
+27. agents/graph.py written. Defines GraphState (see #25), build_graph() wiring the fan-out/fan-in topology and compiling it, and make_tick_handler(compiled_graph) -> Callable[[Blackboard], Awaitable[None]], the adapter that turns the compiled graph into exactly the shape Simulator.on_tick expects. This is the ONE integration point connecting Simulator (built with zero knowledge of agents) and the agent graph (built with zero knowledge of Simulator's internals), by design. Flagged: exact LangGraph API surface (StateGraph/START/END/add_node/add_edge/compile) should be verified against the installed langgraph==1.2.9 docs since pinned-version specifics can drift from general patterns.
+28. All 4 non-Orchestrator agent shells written (gate_agent.py, crew_agent.py, ats_agent.py, disruption_agent.py). Each: reads state.snapshot only (never state.board), calls into its corresponding decisions/*.py file for the actual decision (see #30-31), and returns {"proposals": [...]}, a dict update matching GraphState's proposals reducer. Each file uses `if TYPE_CHECKING: from app.agents.graph import GraphState` with string-annotated type hints to avoid circular imports with graph.py (which imports all 5 node functions). IMPORTANT DESIGN NOTE flagged in disruption_agent.py itself: since Simulator already auto-injects scripted disruptions directly (Decision #22), Disruption Agent's actual current role is narrower than its name suggests, it monitors already-injected unresolved disruptions and re-escalates them each tick via DisruptionInjectionProposal, rather than deciding whether new disruptions fire. The more interesting future role (proposing genuinely NEW, agent-predicted disruptions, not scripted ones) is explicitly not implemented yet, flagged as a known gap to revisit.
+29. agents/orchestrator.py written, the sole writer (Decision #19) in practice now. Splits proposals by type (gate/crew/schedule/disruption) and processes each via a dedicated helper (_apply_gate_proposals, _apply_crew_proposals, _apply_schedule_proposals, _apply_disruption_proposals). Conflict DETECTION is implemented directly in this file as deterministic/structural logic (grouping gate proposals by proposed_gate_id, tracking claimed crew_ids across proposals within a tick), NOT considered swappable "intelligence." Conflict RESOLUTION STRATEGY (which proposal wins when there's a genuine conflict) is delegated to decisions/orchestrator_decisions.py via a `_placeholder_resolve` stand-in (naive first-proposal-wins) until that file is wired in. CRITICAL correctness pattern used throughout: every write looks up the corresponding object fresh on `state.board` (the live reference) by id, since proposals only ever carry ids, not live object references, agents only ever saw the detached snapshot, so anything embedded in a proposal (e.g. DisruptionInjectionProposal.disruption_event) is already stale and must never be mutated directly, the LIVE object must be looked up by matching id (e.g. event_id) instead. Every decision_log entry and lock acquisition follows the pattern established in event_bus.py (Decision #18), sequential, never nested, to avoid deadlocking the non-reentrant asyncio.Lock.
+30. Rule-based vs LLM-based split decided for decisions/*.py: gate_decisions.py, crew_decisions.py, ats_decisions.py are RULE-BASED (deterministic constraint-satisfaction, filtering, no genuine judgment call, an LLM call here would add latency/cost/nondeterminism for zero quality gain). disruption_decisions.py and orchestrator_decisions.py are LLM-BASED (genuine multi-factor judgment calls: how urgently should this disruption be prioritized, which of several competing proposals should win a resource conflict, both benefit from real reasoning and conveniently produce natural-language explanations that flow directly into DecisionLogEntry.detail).
+31. All 5 decisions/*.py files written.
+    - gate_decisions.py: decide_gate_assignment(flight, available_gates) -> str | None. Rule-based, prefers exact aircraft-size fit (narrow-body gets a narrow-only gate) over a compatible-but-oversized wide-body-capable gate, preserving wide-body gates for wide-body flights.
+    - crew_decisions.py: decide_crew_assignment(flight, available_crew) -> list[str]. Rule-based, for each required role (BAGGAGE, PUSHBACK, CLEANING) filters by role/availability/sufficient shift_minutes_remaining >= flight.turnaround_time, picks the eligible crew member with the MOST remaining shift time (load-balancing heuristic).
+    - ats_decisions.py: decide_delay_risk(flight, current_tick) -> bool. Rule-based, primarily uses the already-computed Flight.is_delayed, plus a secondary heuristic flagging WIDE_BODY flights that are LANDED but not yet AT_GATE as elevated risk (tighter turnaround margins). NOTE: current_tick is accepted for contract stability/future extension but isn't decision-critical in this version, since is_delayed already reflects real elapsed time correctly.
+    - disruption_decisions.py: async decide_disruption_priority(disruption) -> str. LLM-based via langchain_anthropic.ChatAnthropic (model="claude-haiku-4-5-20251001", chosen for cost/latency since this fires once per unresolved disruption per tick), using .with_structured_output() against a local _PriorityAssessment Pydantic schema. Falls back to a deterministic string on any API failure/exception, must never crash the simulation tick.
+    - orchestrator_decisions.py: async decide_conflict_resolution(competing_proposals) -> AgentProposal. LLM-based, same ChatAnthropic/Haiku setup, structured output against a local _ResolutionChoice schema (winning_proposal_id + reasoning). CRITICAL SAFETY CHECK: the returned winning_proposal_id is validated against the actual set of competing proposal_ids before being trusted, an LLM hallucinating an id that doesn't match any real proposal must never be allowed to corrupt state, falls back to the first proposal (matching the previous placeholder behavior) on any invalid response or exception.
+    - requirements.txt: langchain-anthropic ADDED by user (confirmed done). anthropic SDK comes in as its transitive dependency.
+32. [RESOLVED, see #33] OPEN, NOT YET DONE (explicitly flagged, blocking full functionality even though all files exist): (a) ANTHROPIC_API_KEY needs to be set in the environment, and ideally loaded via config.py once that file exists rather than left as an ambient env var; (b) two call sites need updating from sync to async now that the real decision functions replace the placeholders: agents/orchestrator.py's `winner = _placeholder_resolve(competing)` must become `winner = await decide_conflict_resolution(competing)` (and the corresponding import uncommented), and agents/disruption_agent.py's inline placeholder `reasoning = f"..."` must become `reasoning = await decide_disruption_priority(disruption)` (import uncommented). Forgetting either await is a silent bug (returns a coroutine object, not the actual value), not a crash, explicitly flagged as higher-risk than a loud failure.
+33. [STATUS CHECK / CONTEXT RESYNC] A full static review (Claude, this session) found this context file had drifted well behind the actual repo: main.py, config.py, api/routes.py, api/schemas.py, api/websocket.py were all listed above as NOT YET WRITTEN but are in fact fully written (94-128 lines each). Decision #32's item (b) (the two await/placeholder call sites) was also already fixed in code. pytest, pytest-asyncio, AND pydantic-settings were already added to requirements.txt despite config.py's own docstring still claiming pydantic-settings was missing. tests/test_agents.py (440 lines) and tests/test_decisions.py (332 lines) are also written, not just test_simulator.py. Sandbox could not actually execute pytest (no network access to install deps in that review session), so verification was AST-parse (zero syntax errors across app/ and tests/) plus manual cross-referencing of every test import against the real implementation (all consistent) rather than a live test run. Sections below (BUILD SEQUENCE STATUS, REPO STRUCTURE) updated to match actual repo state as of this resync.
+34. [BUG FOUND + FIXED] Import-order bug: decisions/disruption_decisions.py and decisions/orchestrator_decisions.py both construct `ChatAnthropic(...)` at MODULE IMPORT time (top-level, not inside a function). main.py's top-level import of app.agents.graph transitively imports both of those modules, and that import used to happen BEFORE lifespan() ever called get_settings()/sync_anthropic_env(). Net effect: .env's ANTHROPIC_API_KEY was never bridged into os.environ before ChatAnthropic() tried to read it — only a truly ambient shell env var would have worked, undermining config.py's stated purpose and Decision #32(a)'s "load via config.py" plan. FIXED: main.py now calls get_settings()/sync_anthropic_env()/warn_if_api_key_missing() at module import time, before the app.agents.graph import line. The duplicate calls that used to live at the top of lifespan() were removed from there (lifespan() still reads `settings = get_settings()`, which is @lru_cache'd and cheap, for the values it needs). Both edited files carry inline `EDITED` docstring/comment notes at the exact change points.
+35. [BUG FOUND + FIXED] Related fragility in config.py: `Settings.model_config` used `env_file=".env"`, a path resolved against the process's current working directory, not this file's location. If uvicorn/main.py is ever launched from a directory other than backend/, Settings() would silently fail to find .env (anthropic_api_key stays None, no error). FIXED: env_file now built from `BASE_DIR = Path(__file__).resolve().parent.parent`, an absolute path independent of cwd.
+36. [SUPERSEDED, see #40] STILL OPEN after #34/#35: user must still put a real value in backend/.env's ANTHROPIC_API_KEY (currently empty, `ANTHROPIC_API_KEY=` with nothing after it) — the import-order/path fixes make the key reach ChatAnthropic() correctly once it's actually set, they don't supply a key. User has stated they will add it themselves; not yet confirmed done as of this entry. Moot as of #40: project switched LLM providers away from Anthropic entirely before this was ever resolved, so ANTHROPIC_API_KEY is no longer needed anywhere in the codebase.
+37. [BUG FOUND, Claude end-to-end review session] The packaging fix implied by #33-35 (pyproject.toml, __init__.py files) had actually been applied at the WRONG location: pyproject.toml sat at the repo root instead of inside backend/, and the __init__.py files it described creating existed only in a decoy, empty `app/` package tree at the repo root (plus an empty root-level `tests/`) — backend/app/, where all the real code lives, had zero __init__.py files. Practical effect: pytest's `testpaths = ["tests"]` resolved to the empty root-level tests/ folder, not backend/tests/ (where test_simulator.py/test_agents.py/test_decisions.py actually live), so running `pytest` as configured collected zero tests, silently, no error. AST-parsed every file in app/ and tests/ during this review: zero syntax errors, so this packaging issue was the only structural blocker found.
+38. [FLAGGED, not a code issue] backend/.env contained a live, real ANTHROPIC_API_KEY value, exposed via the project zip upload. Flagged as a security concern requiring rotation in the Anthropic console; unrelated to code correctness.
+39. [FIXED, user] Packaging bug (#37) resolved: pyproject.toml moved into backend/ (right next to the real app/ and tests/), real __init__.py files added under backend/app/, backend/app/{agents,api,core,data,decisions}/, and backend/tests/, and the decoy root-level app/ and tests/ directories removed entirely. Confirmed via re-check of the updated zip; pythonpath/testpaths in pyproject.toml now correctly resolve relative to backend/.
+40. [DECISION] LLM provider switched from Anthropic (ChatAnthropic, claude-haiku-4-5-20251001) to Google Gemini (ChatGoogleGenerativeAI, model="gemini-3.6-flash") in both decisions/disruption_decisions.py and decisions/orchestrator_decisions.py, reason: no Anthropic API credits available. Because both files were written against LangChain's provider-agnostic chat-model interface (.with_structured_output(), .ainvoke()), only the import line and the `_llm = ...` construction line needed to change in each file — the structured-output schemas (_PriorityAssessment, _ResolutionChoice), the hallucination-safety validation, and the deterministic fallback-on-exception logic are all unchanged and provider-agnostic.
+41. config.py updated to match #40: `anthropic_api_key` field renamed to `google_api_key`; `anthropic_model` renamed to `gemini_model` (added but NOT yet wired in — decisions/disruption_decisions.py and decisions/orchestrator_decisions.py still hardcode "gemini-3.6-flash" directly rather than reading settings.gemini_model, same "hardcoded, wiring to Settings is a follow-up" gap that existed for the Anthropic model string). `sync_anthropic_env()` renamed to `sync_gemini_env()`, now sets GOOGLE_API_KEY instead of ANTHROPIC_API_KEY; `warn_if_api_key_missing()` updated to check GOOGLE_API_KEY.
+42. [BUG FOUND + FIXED] First provider-swap regression: `sync_gemini_env(get_settings())` was only being called from main.py's module-import-time bootstrap (per Decision #34's pattern), but pytest collects tests/test_agents.py and tests/test_decisions.py directly — both import the decisions/*.py modules (which construct ChatGoogleGenerativeAI at module import time) without main.py ever running, so GOOGLE_API_KEY was never synced into os.environ before those collection-time imports, and pytest failed with a pydantic ValidationError ("API key required for Gemini Developer API") on both test files. FIXED: `sync_gemini_env(get_settings())` call added directly at the top of both decisions/disruption_decisions.py and decisions/orchestrator_decisions.py, immediately before the `_llm = ChatGoogleGenerativeAI(...)` line, so the key is guaranteed present regardless of which entrypoint (main.py, pytest, a REPL) imports the file first.
+43. [BUG FOUND + FIXED] Second provider-swap regression, same symptom as #42 but a different cause: backend/.env had `GEMINI_API_KEY=...` set, but config.py's Settings field is named `google_api_key`, and pydantic-settings auto-matches .env variables to field names (i.e. it looks for GOOGLE_API_KEY, not GEMINI_API_KEY). Net effect: `settings.google_api_key` stayed None, `sync_gemini_env()` silently did nothing (its `if settings.google_api_key:` guard was never true), GOOGLE_API_KEY was never actually set in the process environment, and ChatGoogleGenerativeAI() construction failed identically to #42 even after #42's fix was in place — another instance of the project's recurring "silent bug, not a crash" failure mode (see #34). FIXED: renamed the key in backend/.env to `GOOGLE_API_KEY=...` to match the Settings field name.
+44. CONFIRMED WORKING (user, live uvicorn run): app starts clean, simulator ticks, and decide_disruption_priority()/decide_conflict_resolution() are firing real, successful calls to Gemini (HTTP 200 OK from generativelanguage.googleapis.com against gemini-3.6-flash). One harmless UserWarning observed: gemini-3.6-flash "uses fixed sampling defaults", meaning the `temperature=0` passed into both ChatGoogleGenerativeAI(...) constructors is silently ignored by this model tier — doesn't affect correctness, only means the determinism temperature=0 was meant to provide (matching the project's seed=42 reproducibility convention elsewhere) isn't actually happening. NOT YET DECIDED: drop the now-no-op temperature=0 param, or switch to a Gemini tier that honors it.
+45. STILL OPEN, carried from the provider swap: a full `pytest` run has not been explicitly re-confirmed passing after the GOOGLE_API_KEY fix (#43) — the two collection errors seen during the swap were caused by exactly the bug #43 fixed, so it should now collect and run clean, but this hasn't been explicitly re-run and confirmed since.
+46. STILL OPEN, cosmetic: both decisions/disruption_decisions.py and decisions/orchestrator_decisions.py still carry header comments referencing langchain-anthropic and ANTHROPIC_API_KEY (leftover from before #40) — stale, not yet cleaned up. Also not yet explicitly re-verified: whether langchain-anthropic was actually removed from requirements.txt and langchain-google-genai added in its place.
+47. STILL OPEN, security: the Gemini API key (like the earlier Anthropic key) has now passed through this context/session multiple times via zip uploads. Recommended but not yet confirmed done: restrict the key in Google Cloud Console to the Generative Language API only, and set a billing/quota alert given the LLM calls fire once per unresolved disruption AND once per resource conflict, every tick.
+48. CONFIRMED (user): full `pytest` run now passes end-to-end, closing out Decision #45 — the two collection errors from the provider swap are gone. Test suite is fully green as of this entry.
+49. [RE-VERIFICATION PASS, Claude] Explicitly re-checked every item previously listed as "still genuinely open" against the actual repo (not just carried forward on the assumption nothing changed): CANCELLED-flight gate/crew clearing still not implemented anywhere (grepped orchestrator.py and simulator.py for CANCELLED handling — simulator.py only skips CANCELLED flights during status progression, no clearing logic exists); Gate model in core/models.py still has no blocking-reason field; disruption_agent.py's narrowed role is unchanged (still only re-escalates already-injected disruptions, its own docstring still flags the "propose genuinely new disruptions" gap as unimplemented); orchestrator.py's per-contested-crew-id conflict resolution logic is byte-for-byte the same pattern as before; websocket.py still has no heartbeat event (its own in-file comment still flags this); no frontend/ directory exists in the repo at all; no docs/ directory exists at all. All confirmed still genuinely open, not stale carryover.
+50. [MAJOR RE-VERIFICATION SESSION, Claude, this session] User uploaded a fresh zip (much larger scope than the previous review: a full frontend now exists with node_modules, docs/architecture.md is written, and a new manual/auto tick-control feature was added). Everything below (#50-#62) is from actually extracting and running this zip, not from reading the diff against the last-known state. First action, before any functional review: checked backend/.env for secrets, since Decision #38 had already flagged this repo's .env as containing a live key once before.
+51. [SECURITY, STILL OPEN, RE-CONFIRMED] backend/.env's GOOGLE_API_KEY is STILL a live, real key (53 chars, confirmed present but NOT echoed/logged). This is the same key Decision #47 already flagged as needing rotation/restriction; as of this zip it does not appear to have been rotated, since the same key format is still there. Restated plainly for visibility: rotate this key in Google Cloud Console, and stop including backend/.env in project zips (add it to whatever exclude list is used when zipping, on top of any .gitignore entry it may already have).
+52. [RE-VERIFIED] Packaging fix (Decisions #37/#39) holds up: pyproject.toml is inside backend/, real __init__.py files exist under every subpackage (agents/api/core/data/decisions) plus backend/, no decoy root-level app/ or tests/ directories exist. Installed requirements.txt into a fresh venv (zero errors) and ran `cd backend && pytest`: 57/57 tests pass (up from the 54 last independently confirmed passing; test_agents.py and test_decisions.py have grown substantially, 440 and 332 lines respectively per Decision #33's resync, so this is consistent with real added coverage, not a regression).
+53. [BUG FIX CONFIRMED, resolves the crew-release gap this file's own Decision-#40-numbered-differently entry — i.e. the OLD #40 from before the provider-swap renumbering — had flagged] core/simulator.py's `_advance_flight_statuses()` READY_FOR_PUSHBACK -> DEPARTED block now frees crew symmetrically to how it already frees the gate: iterates `flight.assigned_crew`, looks up each CrewMember on the live board, sets `available = True` and `assigned_flight = None`. Correct, mirrors the gate-release code exactly, in-file comment explicitly cites this as the fix for the previously-flagged gap. Verified by reading the code directly, not just by the comment claiming it.
+54. [BUG FIX CONFIRMED] The websocket per-tick-heartbeat gap (flagged repeatedly: originally when api/websocket.py was first written, and again in Decision #49's re-verification) is fixed. core/simulator.py's run_tick() now publishes a "tick_complete" event unconditionally at the end of every tick; api/websocket.py's `_PUSH_TRIGGERING_EVENTS` tuple now includes "tick_complete" alongside the original 4 event types, with an in-file comment explaining this became necessary once manual step-mode existed (a person stepping one tick at a time needs to see something happen on every step, even a quiet one). Verified by reading both files directly.
+55. [NEW FEATURE] Manual/automatic tick control added: core/sim_controller.py (NEW FILE) defines `SimulationController`, wrapping a Simulator with a `mode: "auto" | "manual"` and an asyncio.Event-based step signal. "auto" mode ticks on the original fixed real-world interval; "manual" mode only ticks when `request_step()` is called, gated by an asyncio.Lock so a step arriving at the exact moment mode flips can't race the loop's own tick. api/simulation_control.py (NEW FILE) exposes this over REST at /api/simulation: GET/POST /mode, POST /step, reached via `request.app.state.sim_controller` (set up in main.py's lifespan()). Deliberately kept separate from api/routes.py, since routes.py's own docstring states it never mutates state and these endpoints do (indirectly, by triggering ticks). /step returns 409 if called while in auto mode (redundant/confusing otherwise) or after the simulator has halted from a prior tick failure. VERIFIED via a live REST smoke test through the actual ASGI app (not just reading code): GET /api/simulation/mode, POST /mode to switch to manual, repeated POST /step calls with generous waits between them genuinely advanced current_tick and flight statuses; POST /step while in auto mode correctly returned 409. One thing worth knowing, not a bug: request_step() coalesces via a boolean Event, not a counter/queue, so rapid-fire step calls faster than the loop can consume them collapse into fewer actual ticks than requests, this didn't matter in testing once waits were generous enough, and the API layer's 409-while-auto guard prevents the specific "stale queued step from auto mode firing later in manual mode" edge case from ever being reachable through the real endpoints.
+56. [FRONTEND NOW EXISTS] A full React frontend has been built (previously NOT STARTED, Decision #37/#49). Structure matches and exceeds the original planned component list (Timeline -> FlightTimeline.jsx, DecisionLog.jsx, DisruptionPanel.jsx, GateBoard.jsx, plus CrewPanel.jsx, ConflictPanel.jsx, FlightDetailModal.jsx, Header.jsx not originally planned). `frontend/src/api/mockData.js` provides canned demo snapshots so the UI has something to show even with no backend running, useLiveState.js falls back to this automatically on websocket connect failure, this is a nice property for a resume demo (works even if someone views it without spinning up the backend). Two real bugs were already found and fixed on the frontend side, per its own inline "EDITED" comments (same self-documenting fix pattern as the backend's provider-swap fixes): (a) the websocket URL was wrong (`/ws/state`, should be `/ws`, matching api/websocket.py's actual route with no prefix) — this silently failed the handshake every time and permanently fell back to mock data; (b) the websocket message handler was doing `setState(data)` on the raw WebSocketMessage envelope instead of `setState(data.payload)`, so every component's `state.flights ?? {}`-style fallback silently rendered empty instead of throwing, masking the bug. Both fixes verified present in the actual code, not just claimed in comments. VERIFIED the frontend actually builds: the zipped node_modules contained Windows-native binaries (the repo's actual location is D:\Projects\airport-ops) that don't run on this review's Linux sandbox, a platform-portability artifact of zipping node_modules at all, not a code defect; after `rm -rf node_modules && npm install` on this platform, `vite build` succeeds cleanly (28 modules, ~604ms). REST/WS base URLs on the frontend (`http://localhost:8000/api`, `ws://localhost:8000/ws`) correctly match the backend's actual mounted paths and default port.
+57. [DOCS NOW EXIST, ONE STALE INACCURACY FOUND] docs/architecture.md (117 lines) has been written — previously NOT STARTED, and explicitly flagged elsewhere in this file as THE primary interview/resume asset, not just cleanup. Read in full: covers the core problem statement, a Mermaid system-overview diagram, the agents/decisions split rationale (with a rule-based-vs-LLM decision table), the single-writer pattern's reasoning, the Blackboard+EventBus complementary-layers reasoning, why Simulator owns the world clock, real-world-data-readiness, and tech-stack rationale. Accurate against the actual code on every point independently spot-checked, EXCEPT ONE: its "Known limitations" section still states "No generic per-tick websocket heartbeat exists — a quiet tick... produces no push," which was fixed in this exact session's review (see #54) — this line is now stale/incorrect and should be removed or updated before anyone (an interviewer, or the user rehearsing for one) reads it and either gets caught out or repeats an outdated claim. This is the single most actionable finding from this whole review, precisely because this file is the one meant to be read by someone else.
+58. [ISSUE, STILL NOT FIXED, RE-CONFIRMED] decisions/ats_decisions.py's WIDE_BODY+LANDED delay-risk heuristic is unchanged from when this was first flagged: it still re-flags the identical flight as delay-risk on every single tick it remains landed without a gate, producing duplicate `delay_risk_flagged` decision_log entries. Re-read the file directly in this session, confirmed byte-for-byte unchanged from the version already flagged. Contradicts ats_agent_node's own docstring, which claims it deliberately avoids flooding the log this way.
+59. [ISSUE, STILL NOT FIXED, RE-CONFIRMED] Stale Anthropic-era references remain in multiple places despite the Gemini provider swap (Decisions #40-43) being functionally complete and working: decisions/disruption_decisions.py and decisions/orchestrator_decisions.py both still carry header comments reading "REQUIRES: langchain-anthropic added to requirements.txt... Also requires ANTHROPIC_API_KEY set in the environment" directly above their actual `from langchain_google_genai import ChatGoogleGenerativeAI` import; disruption_decisions.py's docstring also still describes an already-fixed await-placeholder bug as if it were open ("the call site needs to change to `reasoning = await decide_disruption_priority(disruption)` once this file is wired in" — it already is). config.py's own module docstring and one inline comment (near the `gemini_model` field) also still reference ChatAnthropic/"claude-haiku-4-5-20251001" despite the class itself having been correctly renamed to google_api_key/gemini_model. None of this is a functional bug, all of it is a credibility risk in a live code walkthrough.
+60. [OPEN ITEM RESOLVED BY DIRECT VERIFICATION, ANSWER IS "NOT DONE"] Decision #46 flagged "not yet explicitly re-verified whether langchain-anthropic was removed from requirements.txt" as open. Directly checked in this session: it was NOT removed. requirements.txt still contains both `anthropic==0.120.0` and `langchain-anthropic==1.5.2` alongside the new `google-genai==2.14.0` and `langchain-google-genai==4.3.1`. Not a functional problem (extra installed packages, not a conflict), but dead weight worth pruning, and inconsistent with the project having fully switched providers.
+61. [RE-CONFIRMED LIVE] Ran the actual app end-to-end in this session (with a deliberately fake API key, not the real one in .env, to avoid using the live credential at all): confirmed gates=6/crew=12 seed correctly, confirmed the LLM call path is reached (got a 403 from this sandbox's own network egress allowlist blocking generativelanguage.googleapis.com, not from the app), confirmed the fallback path fires cleanly with zero crash, and — separately — reproduced Decision #44's gemini-3.6-flash "fixed sampling defaults" UserWarning directly in this session's own logs, so that finding is independently re-confirmed, not just carried forward from the user's report.
+62. [MINOR, cosmetic] Found an empty, apparently-stray directory at the repo root: manual-auto-tick-control/frontend/src/, containing zero files. Almost certainly leftover scaffolding from whatever tooling built the manual/auto tick-control feature (Decision #55) that never got cleaned up, harmless but worth deleting, same category as the earlier stray decoy directories from the packaging bug (Decision #37/#39), though this one is empty rather than containing hollow duplicate code.
+
+=== THE 5 AGENTS (final) ===
+1. GATE HANDLING AGENT
+   - Assigns flights to gates based on aircraft size, turnaround time, adjacency constraints
+   - Detects/resolves gate conflicts (two flights wanting same slot)
+   - Tracks gate occupancy state in real time
+   - Future: taxi distance optimization, terminal congestion balancing, learned airline gate preferences
+
+2. GROUND CREW AGENT
+   - Assigns crew (baggage, pushback, cleaning) to turnarounds based on availability/shift constraints
+   - Flags understaffed turnarounds, requests reprioritization
+   - Tracks crew fatigue/shift-hour limits
+   - Future: multi-skill crew optimization, fatigue-aware scheduling, cross-agent shared crew pool negotiation
+
+3. ATS (SCHEDULE TRACKING) AGENT
+   - Monitors scheduled vs actual arrival/departure times
+   - Flags timing conflicts / cascading delay risk before critical
+   - Feeds real-time schedule deltas to Orchestrator
+   - Future: predictive delay modeling (ML-based ETA correction), runway/slot contention modeling
+
+4. DISRUPTION AGENT
+   - Injects/manages disruption events: weather holds, tech-unserviceable aircraft, crew shortages
+   - Determines which flights/resources are affected by a disruption
+   - Communicates severity/scope to Orchestrator to trigger replanning
+   - Future: live weather/NOTAM data feeds, probabilistic disruption modeling, multi-event cascading disruptions
+
+5. ORCHESTRATOR AGENT
+   - Central coordinator, resolves conflicts raised by other 4 agents
+   - Re-runs downstream agents' decision logic when disruption/conflict flagged
+   - Maintains system-wide state consistency (single source of truth)
+   - Logs every decision + rationale for dashboard reasoning trace (via Blackboard.log_decision() appending DecisionLogEntry to AirportStatus.decision_log)
+   - Future: negotiation protocol (bidding/priority scoring vs hard rules), multi-objective optimization (cost vs delay vs passenger impact), replay/what-if simulation mode
+   - CANDIDATE for single-writer role if Decision #19 is resolved that way
+
+=== BUILD SEQUENCE STATUS (re-verified end-to-end by actually running the repo, Decision #50-62 — supersedes the Decision #33 resync below where they conflict) ===
+- CONFIRMED, this session: `cd backend && pip install -r requirements.txt && pytest` → 57/57 pass, clean venv, zero errors.
+- CONFIRMED, this session: full app boots via the real ASGI lifespan, seeds 18 flights / 6 gates / 12 crew, serves live data over REST, manual/auto tick control works over real HTTP calls (mode switch, step, 409 guards all correct).
+- CONFIRMED, this session: crew-release-on-departure gap (previously flagged) is fixed, correctly, symmetric to the existing gate-release code (Decision #53).
+- CONFIRMED, this session: websocket per-tick heartbeat gap (previously flagged) is fixed via a new "tick_complete" event (Decision #54).
+- NEW, DONE, this session's discovery: core/sim_controller.py + api/simulation_control.py, manual/auto tick control over REST (Decision #55). Verified live.
+- NEW, DONE, this session's discovery: full React frontend exists and builds clean (Decision #56). Two more real wiring bugs already found+fixed on the frontend side by whatever session built it (wrong ws URL, envelope-unwrapping bug) — verified present in the actual code.
+- NEW, DONE, this session's discovery: docs/architecture.md exists (Decision #57) — high quality, one stale line to fix (claims the heartbeat gap from Decision #54 still exists; it doesn't).
+- STILL OPEN, re-confirmed not fixed this session: ats_decisions.py decision-log spam (Decision #58); stale Anthropic-era docstrings/comments across decisions/*.py and config.py (Decision #59); langchain-anthropic/anthropic still in requirements.txt, not pruned (Decision #60).
+- STILL OPEN, security, re-confirmed not resolved: GOOGLE_API_KEY in backend/.env is still a live key as of this exact zip (Decision #51) — needs rotation, and .env needs to stop being included in project zips.
+- STILL OPEN, minor: empty stray directory manual-auto-tick-control/frontend/src/ at repo root (Decision #62).
+
+=== BUILD SEQUENCE STATUS (resynced against actual repo, Decision #33 — historical, see above block for the current state) ===
+No longer following a fixed day-by-day schedule (see Timeline/Priority section). User is building schema-first and iterating with review passes. Actual progress so far:
+- DONE: core/models.py (Pydantic schemas, timezone-normalized)
+- DONE: core/event_bus.py (EventBus + Blackboard, async, lock-protected)
+- DONE: core/proposals.py (AgentProposal base + 4 subclasses, single-writer contract, Decision #21)
+- DONE: core/simulator.py (world-clock tick loop, on_tick callback injection point for the agent graph, Decision #22)
+- DONE: data/seed_flights.py (mock flight generator, seeded, tz-aware, realistic turnaround ranges)
+- DONE: data/seed_disruptions.py (3 scripted scenarios: weather/bottleneck-cluster, isolated tech issue, crew shortage, all tied to real flight_ids, Decision #24)
+- DONE: data/seed_gates.py, data/seed_crew.py (both take an optional seed param, matching seed_flights.py's convention; generate_mock_crew also takes per_role: int = 4)
+- DONE: agents/graph.py, agents/gate_agent.py, agents/crew_agent.py, agents/ats_agent.py, agents/disruption_agent.py, agents/orchestrator.py (all 6, Decisions #27-29)
+- DONE: decisions/gate_decisions.py, decisions/crew_decisions.py, decisions/ats_decisions.py (rule-based, Decision #31)
+- DONE: decisions/disruption_decisions.py, decisions/orchestrator_decisions.py — LLM-based, now via Google Gemini (ChatGoogleGenerativeAI, model="gemini-3.6-flash") after the provider swap (Decisions #40-43), NOT the original ChatAnthropic/Haiku from Decision #31. Both await call-sites in agents/orchestrator.py and agents/disruption_agent.py confirmed wired correctly (Decision #32(b) resolved). CONFIRMED WORKING end-to-end via a live uvicorn run (Decision #44): real successful Gemini API calls observed in server logs.
+- DONE (packaging, Decisions #37/#39): pyproject.toml correctly located in backend/, real __init__.py files present under backend/app/ and all its subpackages plus backend/tests/. No decoy/empty package trees remain at the repo root.
+- DONE: api/routes.py, api/schemas.py, api/websocket.py (ConnectionManager + full-state-snapshot broadcast on flight_departed_origin/flight_landed/flight_departed/disruption_triggered; websocket.py itself flags an open item: a tick where none of those 4 events fire produces no push, no generic per-tick heartbeat event exists yet — not fixed, intentionally out of scope when written)
+- DONE: main.py (FastAPI entrypoint, lifespan-managed background tick loop, EDITED per Decision #34 for import-order correctness) and config.py (pydantic-settings based Settings, EDITED per Decision #35 for an absolute .env path, and again per Decision #41 for the Gemini field/function renames)
+- DONE: tests/test_simulator.py (Decision #23), tests/test_agents.py (440 lines — covers all 6 agent/orchestrator nodes, monkeypatches decisions/*.py functions at the point each agent module imported them by name), tests/test_decisions.py (332 lines — covers all 5 decisions/*.py functions including the LLM-based ones' structured-output schemas _PriorityAssessment/_ResolutionChoice and their fallback paths)
+- CONFIRMED: full `pytest` run passes end-to-end (Decision #48) — closes out the collection errors caused by the provider swap (Decision #43/#45).
+- STILL OPEN: not yet explicitly re-verified whether langchain-anthropic was actually removed from requirements.txt and langchain-google-genai added in its place (Decision #46).
+- STILL OPEN, cosmetic: header comments in decisions/disruption_decisions.py and decisions/orchestrator_decisions.py still reference langchain-anthropic/ANTHROPIC_API_KEY, leftover from before the provider swap (Decision #46).
+- STILL OPEN: config.py's `gemini_model` Settings field isn't actually read by either decisions file yet — both still hardcode "gemini-3.6-flash" directly (Decision #41).
+- STILL OPEN: gemini-3.6-flash silently ignores the `temperature=0` passed into both ChatGoogleGenerativeAI(...) calls (model uses fixed sampling defaults) — not yet decided whether to drop the now-no-op param or switch tiers (Decision #44).
+- STILL OPEN, security: rotate/restrict the Gemini API key in Google Cloud Console (Generative Language API only) and set a billing/quota alert, given the LLM calls fire once per unresolved disruption AND once per resource conflict, every tick (Decision #47). The original Anthropic key is moot now that the provider was fully switched away from it, but should still be rotated/revoked if not already done.
+- NOT STARTED: frontend (React scaffold) — separate FRONTEND-CONTEXT-README exists with full spec
+- NOT STARTED: docs/architecture.md, docs/demo_script.md
+- NOT DISCUSSED: whether to reconsider single-process vs split background worker now that timeline pressure is off (still open, carried over unchanged)
+
+=== REPO STRUCTURE (agreed, production-style) ===
+airport-ops/
+├── backend/
+│   ├── app/
+│   │   ├── main.py                  # DONE — FastAPI entrypoint, mounts routes, starts sim loop; EDITED per Decision #34 (settings bootstrap moved above the app.agents.graph import)
+│   │   ├── config.py                # DONE — pydantic-settings Settings, get_settings()/sync_anthropic_env()/warn_if_api_key_missing(); EDITED per Decision #35 (absolute .env path)
+│   │   ├── core/
+│   │   │   ├── models.py            # Pydantic schemas: Flight, Gate, CrewMember, DisruptionEvent, Conflict, DecisionLogEntry, AirportStatus — PURE DATA HOLDERS, timezone-normalized (see exact schema below)
+│   │   │   ├── event_bus.py         # EventBus (async pub/sub) + Blackboard(AirportStatus) with asyncio.Lock-protected log_decision — BOTH kept deliberately (Decision #16)
+│   │   │   ├── simulator.py         # DONE — world-clock tick loop, on_tick callback is the agent-graph integration point (Decision #22)
+│   │   │   └── proposals.py         # DONE — AgentProposal base + GateAssignmentProposal, CrewAssignmentProposal, ScheduleUpdateProposal, DisruptionInjectionProposal (Decision #21)
+│   │   ├── agents/                  # ALL 6 DONE (Decisions #27-29)
+│   │   │   ├── gate_agent.py        # DONE — reads snapshot only, calls decisions/gate_decisions.py
+│   │   │   ├── crew_agent.py        # DONE — reads snapshot only, calls decisions/crew_decisions.py
+│   │   │   ├── ats_agent.py         # DONE — reads snapshot only, calls decisions/ats_decisions.py
+│   │   │   ├── disruption_agent.py  # DONE — reads snapshot only, calls decisions/disruption_decisions.py (LLM), narrowed-role design note flagged in-file (Decision #28)
+│   │   │   ├── orchestrator.py      # DONE — sole writer to Blackboard; detects conflicts structurally, delegates resolution to decisions/orchestrator_decisions.py (LLM)
+│   │   │   └── graph.py             # DONE — GraphState, build_graph() fan-out/fan-in wiring, make_tick_handler() Simulator integration adapter
+│   │   ├── decisions/                # ALL 5 DONE (Decision #31)
+│   │   │   ├── gate_decisions.py    # DONE — rule-based
+│   │   │   ├── crew_decisions.py    # DONE — rule-based
+│   │   │   ├── ats_decisions.py     # DONE — rule-based
+│   │   │   ├── disruption_decisions.py  # DONE — LLM-based, now Google Gemini (ChatGoogleGenerativeAI, gemini-3.6-flash) after provider swap (Decisions #40-43), structured output + deterministic fallback; temperature=0 currently a no-op on this model tier (Decision #44)
+│   │   │   └── orchestrator_decisions.py  # DONE — LLM-based, now Google Gemini (ChatGoogleGenerativeAI, gemini-3.6-flash) after provider swap (Decisions #40-43), structured output + hallucination-safety validation + deterministic fallback
+│   │   ├── models_store/            # trained model artifacts, empty for now
+│   │   ├── api/
+│   │   │   ├── routes.py            # DONE — REST endpoints, imports schemas.py + core/event_bus.board only, no decisions/*.py dependency
+│   │   │   ├── websocket.py         # DONE — ConnectionManager, full-state-snapshot broadcast on 4 event types; known open item noted in-file: no per-tick heartbeat event, a quiet tick produces no push
+│   │   │   └── schemas.py           # DONE — API response models, kept SEPARATE from core/models.py, enums imported directly from core.models
+│   │   └── data/
+│   │       ├── seed_flights.py      # DONE — generates 18-flight schedule, seeded, tz-aware
+│   │       ├── seed_disruptions.py  # DONE — 3 scripted scenarios tied to real flight_ids (Decision #24)
+│   │       ├── seed_gates.py        # DONE — optional seed param
+│   │       └── seed_crew.py         # DONE — optional seed param + per_role: int = 4
+│   ├── tests/
+│   │   ├── test_decisions.py        # DONE — 332 lines, covers all 5 decisions/*.py functions incl. LLM structured-output schemas + fallback paths
+│   │   ├── test_agents.py           # DONE — 440 lines, covers all 6 agent/orchestrator nodes, monkeypatches decisions/*.py at each agent's own import point
+│   │   └── test_simulator.py        # DONE (Decision #23)
+│   ├── requirements.txt              # DONE, RE-VERIFIED (Decision #52): `cd backend && pip install -r requirements.txt` succeeds clean, 57/57 tests pass. STILL contains BOTH anthropic==0.120.0/langchain-anthropic==1.5.2 AND the new google-genai/langchain-google-genai packages (Decision #60) — not pruned after the provider swap, dead weight not a functional problem.
+│   └── README.md
+├── frontend/                         # DONE, EXISTS AND BUILDS (Decision #56) — was NOT STARTED as of every prior pass
+│   ├── src/
+│   │   ├── components/ (FlightTimeline.jsx, DecisionLog.jsx, DisruptionPanel.jsx, GateBoard.jsx, CrewPanel.jsx, ConflictPanel.jsx, FlightDetailModal.jsx, Header.jsx — more than originally planned)
+│   │   ├── hooks/useLiveState.js    # websocket connection + mock-data fallback + manual/auto tick control REST calls
+│   │   ├── api/client.js, api/mockData.js  # mockData.js provides canned demo snapshots for offline/no-backend viewing
+│   │   ├── App.jsx, main.jsx
+│   ├── package.json, vite.config.js  # `vite build` verified clean on a fresh `npm install` (zipped node_modules is Windows-native, doesn't run cross-platform, reinstall on whatever machine actually runs it)
+├── docs/                              # DONE (Decision #57) — was NOT WRITTEN as of every prior pass
+│   └── architecture.md               # 117 lines, THE resume/interview asset. High quality, verified accurate against the code on every point except one stale line (claims the websocket heartbeat gap from Decision #54 still exists — it was fixed, this line needs updating before anyone reads it)
+│   (demo_script.md still not written)
+├── .gitignore
+├── docker-compose.yml
+└── README.md
+manual-auto-tick-control/frontend/src/  # STRAY, empty, likely leftover scaffolding from building Decision #55's feature, safe to delete (Decision #62)
+CONTEXT-README-UPDATED exists inside backend/ (this file; NOTE it has moved from the repo root, where earlier versions of this file assumed it lived, to backend/ — keep saving future updates to backend/CONTEXT-README-UPDATED to match where the user has actually been keeping it)
+
+NEW FILES this session (Decision #55, manual/auto tick control):
+backend/app/core/sim_controller.py       # SimulationController: wraps Simulator with auto/manual mode + asyncio.Event-based step signal + tick-serializing lock
+backend/app/api/simulation_control.py    # REST surface at /api/simulation: GET/POST /mode, POST /step. Deliberately separate from api/routes.py's read-only contract.
+
+Rationale for key separations:
+- agents/ vs decisions/ is THE core architectural decision. agents/ never changes. decisions/ is the only folder touched to upgrade rule-based -> ML. Kept as separate TOP-LEVEL folders so a git diff of a swap shows exactly one file changed.
+- core/models.py is framework-agnostic (no LangGraph/FastAPI imports), standalone unit-testable, pure data layer.
+- api/schemas.py deliberately separate from core/models.py, internal state repr can change without breaking frontend API contract.
+- Process model (single-process vs split worker) not revisited since priority pivot, default was single-process (FastAPI + LangGraph together in main.py), may be worth reconsidering now given quality-over-speed priority, NOT YET DISCUSSED.
+
+=== EXACT CURRENT SCHEMA (ground truth, matches D:\Projects\airport-ops\backend\app\core\models.py as of last read) ===
+Framework: Pydantic v2 (BaseModel, Field, computed_field, field_validator), stdlib enum.Enum / enum.IntEnum, datetime, typing.Annotated.
+Design principle: PURE DATA HOLDERS. Only exceptions: Flight.is_delayed (read-only computed_field) and the UTC-normalization field_validators (input normalization, not business logic).
+
+--- Enums ---
+AircraftType(str, Enum): NARROW_BODY, WIDE_BODY
+FlightStatus(str, Enum): SCHEDULED, IN_AIR, LANDED, AT_GATE, READY_FOR_PUSHBACK, DEPARTED, CANCELLED
+GateStatus(str, Enum): OPEN, OCCUPIED, UNAVAILABLE
+CrewRole(str, Enum): BAGGAGE, PUSHBACK, CLEANING
+DisruptionType(str, Enum): WEATHER, TECH_ISSUE, CREW_SHORTAGE
+DisruptionSeverity(IntEnum): LEVEL_1=1 (minor/localized) ... LEVEL_5=5 (critical system-wide halt)
+
+--- Shared validation helper ---
+_coerce_utc(value): module-level function in models.py. Normalizes any datetime/str input to timezone-aware UTC (naive -> tagged UTC, aware -> converted to UTC). Used via field_validator(mode="before") on all datetime fields.
+
+--- Models ---
+Flight(BaseModel):
+  flight_id: str, airline: str, aircraft_type: AircraftType
+  scheduled_arrival: datetime, scheduled_departure: datetime  (both UTC-normalized via validator)
+  actual_arrival: datetime | None = None, actual_departure: datetime | None = None  (both UTC-normalized via validator)
+  status: FlightStatus = SCHEDULED
+  assigned_gate: str | None = None
+  assigned_crew: list[str] = []  (default_factory)
+  turnaround_time: int  (Field(gt=0), required)
+  is_delayed: bool  -- computed_field, read-only, True if actual_arrival > scheduled_arrival OR actual_departure > scheduled_departure
+
+CrewMember(BaseModel):
+  crew_id: str, role: CrewRole, available: bool (required)
+  assigned_flight: str | None = None
+  shift_minutes_remaining: int  (Field(ge=0), required)
+
+Gate(BaseModel):
+  gate_id: str, supports_wide_body: bool
+  gate_status: GateStatus = OPEN
+  assigned_flight: str | None = None
+
+DisruptionEvent(BaseModel):
+  event_id: str, disruption_type: DisruptionType
+  trigger_time: datetime  (UTC-normalized via validator)
+  severity: DisruptionSeverity
+  disruption_description: str
+  affected_flights: list[str] = []  (default_factory)
+  resolved: bool = False
+
+Conflict(BaseModel):
+  conflict_id: str, agent_id: str, conflict_description: str
+  resolved: bool = False
+  affected_flights: list[str] = []  (default_factory)
+
+DecisionLogEntry(BaseModel):
+  tick: int (Field(ge=0), required), agent_id: str
+  action: str  # free-text label, e.g. "gate_assignment", "conflict_raised", "conflict_resolved", "crew_reassigned"; deliberately plain str not enum since action set may grow
+  detail: str  # human-readable sentence for the reasoning trace UI
+  affected_flights: list[str] = []  (default_factory)
+
+AirportStatus(BaseModel):
+  current_tick: int = 0  (Field(ge=0))
+  flights: dict[str, Flight] = {}  (default_factory)
+  crew: dict[str, CrewMember] = {}  (default_factory)
+  gates: dict[str, Gate] = {}  (default_factory)
+  open_disruptions: list[DisruptionEvent] = []  (default_factory)
+  open_conflicts: list[Conflict] = []  (default_factory)
+  decision_log: list[DecisionLogEntry] = []  (default_factory)
+
+--- Confirmed final field naming (do not rename) ---
+turnaround_time, disruption_description, agent_id (on Conflict), gate_status (on Gate), conflict_description (on Conflict)
+
+=== EXACT CURRENT core/event_bus.py (ground truth) ===
+Event(BaseModel): event_type: str, source: str, payload: dict = {}, timestamp: datetime (UTC, auto now)
+EventBus: async pub/sub.
+  - subscribe(event_type, handler): registers async handler in a defaultdict(list)
+  - publish(event): appends to _event_history, then uses `self._subscribers.get(event.event_type)` (NOT direct indexing, that was the fixed bug) and asyncio.gathers all matching handlers
+  - history(event_type=None): returns full or filtered event history
+Blackboard(AirportStatus): subclass adding coordination methods, not just data.
+  - _lock: asyncio.Lock, PrivateAttr(default_factory=asyncio.Lock) — needed since asyncio.Lock can't be a normal Pydantic field
+  - .lock property exposes _lock for agents to use: `async with board.lock: ...`
+  - async def log_decision(agent_id, action, detail, affected_flights=None): constructs a DecisionLogEntry (tick=self.current_tick) and appends to self.decision_log, wrapped in `async with self._lock`
+Module-level singletons: bus = EventBus(), board = Blackboard()
+
+=== data/seed_flights.py (ground truth) ===
+_generate_unique_flight_id(existing_ids, airline): retries random airline+3digit id until unique within the batch. NOTE: uniqueness is only within a single generated batch/day; real-world flight numbers repeat daily, a real multi-day pipeline would need to key on (flight_number, date).
+generate_mock_flights(seed=None): optional seed param for reproducibility. base_time = 2026-07-24 08:00 UTC (tz-aware). Generates 18 flights in two phases:
+  - Phase 1 (5 flights): deliberate bottleneck, all arrive within an 8:10-8:15 window, to force gate conflicts. 40% wide-body chance.
+  - Phase 2 (13 flights): arrivals spread randomly across 8:30-11:30, 25% wide-body chance.
+  - turnaround_time: randint(75,110) wide-body, randint(35,55) narrow-body (ranged, not fixed, for realism).
+  - Flights sorted chronologically by scheduled_arrival before returning.
+save_flights_to_json(flights, filepath): dumps list[Flight] to JSON via model_dump_json(); creates parent dirs as needed. Documented as the contract a future real-data loader should also satisfy (list[Flight] in from whatever source, same JSON out).
+__main__: calls generate_mock_flights(seed=42), writes to a path built from `os.path.dirname(os.path.abspath(__file__))` (always writes next to the script regardless of cwd, fixes an earlier path bug).
+
+=== core/proposals.py (ground truth) ===
+Imports FlightStatus, DisruptionEvent, _coerce_utc directly from core/models.py (the latter is private-by-convention, imported explicitly anyway; noted as an optional future cleanup to promote to a shared core/validators.py, not done).
+
+AgentProposal(BaseModel) — base class:
+  proposal_id: str  (Field(default_factory=lambda: str(uuid4())))
+  agent_id: str
+  tick: int  (Field(ge=0))
+  reasoning: str  # flows directly into DecisionLogEntry.detail once Orchestrator acts on it
+
+GateAssignmentProposal(AgentProposal): flight_id: str, proposed_gate_id: str
+
+CrewAssignmentProposal(AgentProposal): flight_id: str, proposed_crew_ids: list[str] = []  (default_factory)
+
+ScheduleUpdateProposal(AgentProposal):
+  flight_id: str
+  updated_status: FlightStatus | None = None
+  actual_arrival: datetime | None = None  (UTC-normalized via field_validator, mode="before", reusing _coerce_utc)
+  actual_departure: datetime | None = None  (UTC-normalized via field_validator, mode="before", reusing _coerce_utc)
+  delay_risk_flag: bool = False  # ATS's early-warning signal to Orchestrator, distinct from an actual Conflict
+
+DisruptionInjectionProposal(AgentProposal): disruption_event: DisruptionEvent  # fully-formed event; Orchestrator decides whether/when to actually inject it, may reject or defer
+
+=== core/simulator.py (ground truth) ===
+Simulator class. Constructor: __init__(board: Blackboard, bus: EventBus, tick_duration_minutes: int = 5, on_tick: Callable[[Blackboard], Awaitable[None]] | None = None)
+  - self.sim_time: datetime | None, starts unset, derived from earliest scheduled_arrival once load_flights() is called, no hardcoded assumption about scenario start time
+  - self._pending_disruptions: list[DisruptionEvent], staged disruptions not yet due
+
+Setup methods:
+  - load_flights(flights): seeds board.flights, sets/updates sim_time to earliest scheduled_arrival
+  - load_disruptions(disruptions): stages disruptions into _pending_disruptions, kept sorted by trigger_time
+
+World clock methods (private):
+  - _advance_flight_statuses(): per flight, progresses status based on sim_time vs scheduled times:
+      SCHEDULED -> IN_AIR once sim_time >= scheduled_arrival (publishes "flight_departed_origin" event)
+      IN_AIR -> LANDED once sim_time >= scheduled_arrival + 10min fixed taxi/landing buffer (sets actual_arrival if unset; publishes "flight_landed" event) — the 10-minute buffer is a flagged hardcoded assumption, a real ADS-B/telemetry feed would replace it
+      LANDED -> AT_GATE only once flight.assigned_gate is not None (i.e. only after an agent has assigned a gate; this is the deliberate handoff point from world-clock state to agent-decision state) — KNOWN LIMITATION: with on_tick=None (no agents yet), flights stall at LANDED forever, expected until agent graph exists
+      AT_GATE -> READY_FOR_PUSHBACK once sim_time >= scheduled_departure
+      READY_FOR_PUSHBACK -> DEPARTED (sets actual_departure if unset, frees the gate: assigned_flight=None, gate_status=OPEN; publishes "flight_departed" event)
+      CANCELLED flights are skipped entirely, frozen, no further progression
+      All mutations wrapped in `async with self.board.lock`
+  - _inject_due_disruptions(): moves any pending disruption with trigger_time <= sim_time into board.open_disruptions (lock-protected), publishes "disruption_triggered" event per injected disruption
+
+Tick loop methods:
+  - run_tick(): raises RuntimeError if sim_time is None (load_flights() not called yet). Sequence: _inject_due_disruptions() -> _advance_flight_statuses() -> increment board.current_tick (lock-protected) -> advance sim_time by tick_duration -> if on_tick is not None, await on_tick(self.board). This last call is the sole integration point for the agent graph; simulator.py has no import of agents/graph.py at all.
+  - run(num_ticks): calls run_tick() num_ticks times
+  - run_until(stop_time): calls run_tick() repeatedly while sim_time < stop_time
+
+=== data/seed_disruptions.py (ground truth) ===
+generate_mock_disruptions(flights: list[Flight], seed: int | None = None) -> list[DisruptionEvent]
+  - Takes flights as an explicit parameter, does not generate its own, so it works unchanged whether flights came from generate_mock_flights() or a real schedule.
+  - Produces exactly 3 DisruptionEvents, sorted by trigger_time:
+    1. DIS-WEATHER-001: WEATHER, LEVEL_4, trigger_time = earliest_arrival + 25min, affected_flights = up to 5 flights arriving within the first 20 minutes (the bottleneck cluster from seed_flights.py). This is the designated demo centerpiece.
+    2. DIS-TECH-001: TECH_ISSUE, LEVEL_2, trigger_time = a randomly chosen later flight's scheduled_arrival + 5min, affected_flights = that one flight only.
+    3. DIS-CREW-001: CREW_SHORTAGE, LEVEL_3, trigger_time = the schedule's midpoint flight's scheduled_arrival, affected_flights = 2 randomly sampled non-adjacent flights (excluding the tech-issue target).
+save_disruptions_to_json(disruptions, filepath): same JSON-dump pattern as seed_flights.save_flights_to_json, documented as the contract a future real disruption feed should also satisfy.
+__main__: imports generate_mock_flights from seed_flights.py, both called with seed=42, writes to disruptions_dataset.json next to the script (same __file__-based path pattern as seed_flights.py).
+
+=== tests/test_simulator.py (ground truth) ===
+Fixtures: board() and bus() return fresh Blackboard()/EventBus() instances per test (never the module-level singletons). make_flight() and make_disruption() helper functions build minimal valid Flight/DisruptionEvent objects with sensible offset-based defaults.
+Test coverage: load_flights sets sim_time to earliest arrival; run_tick raises RuntimeError with no flights loaded; SCHEDULED->IN_AIR on first tick; IN_AIR->LANDED after the 10-min buffer with actual_arrival set correctly; LANDED stalls indefinitely without a gate assignment; LANDED->AT_GATE once a gate is manually assigned (simulating what an agent would do); full lifecycle through to DEPARTED with gate freed and actual_departure set; CANCELLED flights never progress across 10 ticks; disruption NOT injected before trigger_time (negative test); disruption injected exactly once trigger_time is reached, with the correct event published to the bus; on_tick callback invoked once per tick with the current board; run(n) advances current_tick by exactly n; run_until(stop_time) runs until sim_time reaches or exceeds the target.
+Dependency note: requires pytest and pytest-asyncio, both currently MISSING from requirements.txt. Uses explicit @pytest.mark.asyncio markers (works with or without asyncio_mode=auto configured).
+
+=== RESUME BULLETS (drafted for AAI AI Intern experience entry, NOT a separate Projects entry) ===
+Style: short, technical, no fluff, one line each, ends within that line. Tense: PRESENT (simple present, not continuous), since both the internship and the project are ongoing/unfinished; matches other resume sections' past tense once the project is actually complete (flip to past tense then, per Decision #20).
+
+\resumeItem{Build a multi-agent airport operations simulation using LangGraph, FastAPI, and Pydantic for real-time disruption-driven resource replanning.}
+\resumeItem{Architect 5-agent LangGraph system (Gate, Crew, ATS, Disruption, Orchestrator) for autonomous conflict resolution.}
+\resumeItem{Build pluggable decision-layer interface, swapping rule-based logic for ML/LLM inference with zero code changes.}
+\resumeItem{Implement async, lock-protected shared-state blackboard with event-driven pub/sub for concurrent agent writes.}
+\resumeItem{Enforce timezone-aware Pydantic schemas for seamless real-world data ingestion without structural rework.}
+
+Resume context: user is a B.Tech IT student at GGSIPU Delhi (CGPA 9.02), ongoing AAI AI Intern. Other resume projects: Sarkari-Sahayak (voice AI gov scheme discovery) and ECG PTB-XL multi-label classifier (kept on resume; Certifications section was removed to make room for this project instead, per user's explicit tradeoff decision, since ECG demonstrates supervised DL depth this project doesn't cover, and Certifications largely duplicated skills already evidenced elsewhere).
+
+=== LIBRARY VERSIONS DECIDED (as of July 2026) ===
+Python: 3.11
+langgraph: 1.2.9
+langchain: 1.3.14
+fastapi: 0.136.3
+uvicorn: 0.51.0
+pydantic: 2.13.4
+react: 19
+vite: 8.1.5
+Package manager: uv (over pip)
+langchain-google-genai: ADDED by user, replaces langchain-anthropic (Decision #40, LLM provider swap) — required by decisions/disruption_decisions.py and decisions/orchestrator_decisions.py, which now construct ChatGoogleGenerativeAI(model="gemini-3.6-flash") instead of ChatAnthropic. Removal of langchain-anthropic from requirements.txt not yet explicitly re-verified (Decision #46).
+
+=== NOT YET DECIDED / OPEN ITEMS (resynced, Decision #37-47) ===
+RESOLVED SINCE LAST RESYNC (kept for history, no longer open):
+- ANTHROPIC_API_KEY blocker (previously the sole immediate blocker, Decision #36): moot — project switched LLM providers to Google Gemini before this was ever resolved (Decision #40).
+- Packaging bug: pyproject.toml was at the repo root instead of backend/, and __init__.py files existed only in a decoy empty package tree at the repo root, not backend/app/ — this made `pytest` (as configured) collect zero tests. FIXED: pyproject.toml relocated into backend/, real __init__.py files added under backend/app/** and backend/tests/, decoy root-level app/ and tests/ removed (Decisions #37, #39).
+- LLM provider swapped from Anthropic (no credits available) to Google Gemini (ChatGoogleGenerativeAI, gemini-3.6-flash) in both decisions/disruption_decisions.py and decisions/orchestrator_decisions.py; config.py's Settings/sync/warn functions renamed and repointed accordingly (Decisions #40-41).
+- Two provider-swap regressions, both fixed: (1) GOOGLE_API_KEY wasn't synced into os.environ before pytest's direct imports of the decisions modules — fixed by calling sync_gemini_env(get_settings()) at the top of each decisions file, not just from main.py (Decision #42); (2) backend/.env had GEMINI_API_KEY set but the Settings field is named google_api_key, so pydantic-settings never picked it up — fixed by renaming the .env key to GOOGLE_API_KEY (Decision #43).
+- CONFIRMED WORKING end-to-end via live uvicorn run: real successful Gemini API calls observed in server logs (Decision #44).
+- Full `pytest` run now confirmed passing end-to-end, closing out what was previously an open item (Decision #48).
+
+IMMEDIATE / NEAR-TERM OPEN ITEMS (all from the packaging fix + provider swap, none blocking, all worth closing out soon):
+- Not yet explicitly re-verified whether langchain-anthropic was removed from requirements.txt and langchain-google-genai added (Decision #46).
+- Stale header comments in decisions/disruption_decisions.py and decisions/orchestrator_decisions.py still reference langchain-anthropic/ANTHROPIC_API_KEY (Decision #46).
+- requirements.txt lives only at the repo root, not inside backend/ as the documented repo structure implies — never relocated, unlike pyproject.toml. Not necessarily broken (pip install -r still works from root), just inconsistent with the documented structure.
+- config.py's `gemini_model` Settings field isn't actually read by either decisions file — both hardcode "gemini-3.6-flash" directly (Decision #41).
+- gemini-3.6-flash ignores the `temperature=0` passed to both ChatGoogleGenerativeAI(...) calls (fixed sampling defaults on this tier) — not yet decided whether to drop the now-no-op param or switch model tiers (Decision #44).
+- Gemini API key security: not yet confirmed whether it's been restricted in Google Cloud Console to the Generative Language API, or whether a billing/quota alert has been set, given the LLM calls fire once per unresolved disruption AND once per resource conflict, every tick (Decision #47). Also not yet confirmed whether the earlier, now-unused Anthropic key has been rotated/revoked.
+
+RESOLVED THIS SESSION (Decisions #50-62, all independently verified by Claude actually running the repo, not just reading it):
+- Crew-release-on-departure gap: FIXED (Decision #53).
+- websocket.py's per-tick heartbeat gap: FIXED via new "tick_complete" event (Decision #54).
+- React frontend: DONE, builds clean, verified over live REST/WS smoke test (Decision #56).
+- docs/architecture.md: DONE (Decision #57), though see the one stale line noted below.
+- Manual/auto tick control: NEW feature, added and verified working (Decision #55).
+
+STILL GENUINELY OPEN as of this session's direct re-verification (each re-checked against the actual repo, not assumed unchanged):
+- SECURITY, HIGHEST PRIORITY: backend/.env's GOOGLE_API_KEY is still a live key, unrotated as far as can be determined from this zip (Decision #51). Rotate it, and stop zipping backend/.env.
+- docs/architecture.md's "Known limitations" section incorrectly still lists the (now-fixed) websocket heartbeat gap as an open limitation (Decision #57) — this is the single most actionable fix remaining, since this file is the one meant to be read by someone else (an interviewer).
+- ats_decisions.py's WIDE_BODY+LANDED heuristic still spams duplicate delay_risk_flagged decision_log entries every tick (Decision #58), unchanged since first flagged.
+- Stale Anthropic-era docstrings/comments in decisions/disruption_decisions.py, decisions/orchestrator_decisions.py, and config.py, despite the Gemini swap being functionally complete (Decision #59).
+- requirements.txt still contains both the old (anthropic, langchain-anthropic) and new (google-genai, langchain-google-genai) LLM provider packages, not pruned (Decision #60, resolves what Decision #46 left as "not yet re-verified" — now verified, answer is "not done").
+- gemini-3.6-flash silently ignores temperature=0 (fixed sampling defaults on this tier) — not yet decided whether to drop the now-no-op param or switch tiers (Decision #44, re-confirmed live in this session per Decision #61).
+- config.py's `gemini_model` Settings field still isn't read by either decisions file, both still hardcode "gemini-3.6-flash" directly (Decision #41).
+- Empty stray directory manual-auto-tick-control/frontend/src/ at repo root, harmless clutter (Decision #62).
+- Whether cancellation (FlightStatus.CANCELLED) should clear assigned_gate/assigned_crew: this is agent/orchestrator logic to implement, not schema-level, per the pure-data-holder principle (Decision #7). Not implemented either way yet.
+- Gate blocking reason/description field: explicitly skipped for now (Decision #10).
+- Whether to reconsider single-process vs split background worker now that timeline pressure is off (not yet discussed post priority-pivot).
+- Disruption Agent's narrowed role (Decision #28's design note): worth revisiting whether it should eventually propose genuinely new, agent-predicted disruptions, not just re-escalate scripted ones already injected by Simulator.
+- Crew conflict resolution currently uses simple claimed-set tracking in orchestrator.py, routed through decide_conflict_resolution per-contested-crew_id (not per whole proposal, unlike gate conflicts) — this split is implemented and working, but whether it's the right long-term design is still worth a second look.
+- docs/demo_script.md not yet written (architecture.md is done, this companion doc is not).

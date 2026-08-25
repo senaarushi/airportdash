@@ -1,0 +1,181 @@
+<svg viewBox="0 0 1200 1500" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowWrite" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1200" height="1500" fill="#ffffff"/>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="1200" height="70" fill="#fef3c7"/>
+  <text x="30" y="32" font-size="23" font-weight="700" fill="#78350f">Orchestrator</text>
+  <text x="30" y="54" font-size="13" fill="#92400e">agents/orchestrator.py · orchestrator_node() — the sole writer of shared state</text>
+  <rect x="965" y="20" width="205" height="28" rx="14" fill="#b45309"/>
+  <text x="1067" y="39" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff">SOLE WRITER + LLM</text>
+
+  <!-- Entry -->
+  <rect x="350" y="95" width="500" height="65" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="600" y="120" text-anchor="middle" font-size="13" font-weight="600" fill="#78350f">board = state.board    proposals = state.proposals</text>
+  <text x="600" y="138" text-anchor="middle" font-size="11" fill="#92400e">split proposals into 4 typed lists (gate / crew / schedule / disruption)</text>
+
+  <path d="M600,160 L600,185" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 4-step pipeline -->
+  <rect x="60" y="185" width="255" height="75" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="187" y="212" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1e3a8a">1. _apply_gate_proposals</text>
+  <text x="187" y="230" text-anchor="middle" font-size="10.5" fill="#1e40af">winner-take-all per gate_id</text>
+  <text x="187" y="245" text-anchor="middle" font-size="10.5" fill="#1e40af">(LLM on contest)</text>
+
+  <rect x="335" y="185" width="255" height="75" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="462" y="212" text-anchor="middle" font-size="12.5" font-weight="700" fill="#4c1d95">2. _apply_crew_proposals</text>
+  <text x="462" y="230" text-anchor="middle" font-size="10.5" fill="#5b21b6">per-crew_id contest</text>
+  <text x="462" y="245" text-anchor="middle" font-size="10.5" fill="#5b21b6">(LLM on contest)</text>
+
+  <rect x="610" y="185" width="255" height="75" rx="10" fill="#cffafe" stroke="#0891b2" stroke-width="2"/>
+  <text x="737" y="212" text-anchor="middle" font-size="12.5" font-weight="700" fill="#155e75">3. _apply_schedule_proposals</text>
+  <text x="737" y="230" text-anchor="middle" font-size="10.5" fill="#0e7490">direct write, no conflicts</text>
+  <text x="737" y="245" text-anchor="middle" font-size="10.5" fill="#0e7490">possible (1 flight : 1 status)</text>
+
+  <rect x="885" y="185" width="255" height="75" rx="10" fill="#ffedd5" stroke="#ea580c" stroke-width="2"/>
+  <text x="1012" y="212" text-anchor="middle" font-size="12.5" font-weight="700" fill="#7c2d12">4. _apply_disruption_proposals</text>
+  <text x="1012" y="230" text-anchor="middle" font-size="10.5" fill="#9a3412">resolve once all affected</text>
+  <text x="1012" y="245" text-anchor="middle" font-size="10.5" fill="#9a3412">flights are re-gated</text>
+
+  <path d="M315,222 L335,222" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M590,222 L610,222" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M865,222 L885,222" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="600" y="290" text-anchor="middle" font-size="11.5" fill="#94a3b8" font-style="italic">run sequentially (awaited in order) inside this one node — not concurrent</text>
+
+  <!-- ===== Gate panel ===== -->
+  <rect x="40" y="320" width="550" height="590" rx="14" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="315" y="350" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">Gate Conflict Resolution</text>
+  <text x="315" y="368" text-anchor="middle" font-size="11" fill="#3b82f6">1 gate : N flights → winner takes the whole proposal</text>
+
+  <rect x="75" y="385" width="480" height="55" rx="8" fill="#ffffff" stroke="#93c5fd" stroke-width="1.5"/>
+  <text x="315" y="405" text-anchor="middle" font-size="11.5" fill="#1e3a8a">Split proposed_gate_id == None first —</text>
+  <text x="315" y="421" text-anchor="middle" font-size="11.5" fill="#1e3a8a">each becomes its own unresolved Conflict (not grouped under "None")</text>
+
+  <path d="M315,440 L315,460" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="145" y="460" width="340" height="42" rx="8" fill="#ffffff" stroke="#93c5fd" stroke-width="1.5"/>
+  <text x="315" y="486" text-anchor="middle" font-size="12" fill="#1e3a8a">group remaining by proposed_gate_id</text>
+
+  <path d="M315,502 L315,525" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <polygon points="315,525 435,570 315,615 195,570" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+  <text x="315" y="565" text-anchor="middle" font-size="11.5" fill="#713f12">group size</text>
+  <text x="315" y="581" text-anchor="middle" font-size="11.5" fill="#713f12">&gt; 1?</text>
+
+  <!-- no branch: simple, right-side pill (consistent with agent diagrams) -->
+  <path d="M435,570 L490,570" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="460" y="560" text-anchor="middle" font-size="10.5" fill="#64748b">no</text>
+  <rect x="490" y="548" width="80" height="44" rx="22" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="530" y="566" text-anchor="middle" font-size="9.5" fill="#166534">sole</text>
+  <text x="530" y="580" text-anchor="middle" font-size="9.5" fill="#166534">winner</text>
+
+  <!-- yes branch: down to LLM -->
+  <path d="M315,615 L315,640" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="335" y="632" font-size="10.5" fill="#64748b">yes</text>
+
+  <rect x="215" y="640" width="200" height="70" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+  <text x="315" y="662" text-anchor="middle" font-size="11" font-weight="700" fill="#7f1d1d">decide_conflict</text>
+  <text x="315" y="677" text-anchor="middle" font-size="11" font-weight="700" fill="#7f1d1d">_resolution() (LLM)</text>
+  <text x="315" y="694" text-anchor="middle" font-size="9.5" fill="#991b1b">validates &amp; falls back</text>
+  <text x="315" y="705" text-anchor="middle" font-size="9.5" fill="#991b1b">to competing[0] on failure</text>
+
+  <!-- both converge -->
+  <path d="M530,592 L530,745 L315,745" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M315,710 L315,745" stroke="#475569" stroke-width="2" fill="none"/>
+
+  <rect x="75" y="745" width="480" height="60" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="315" y="767" text-anchor="middle" font-size="11.5" font-weight="600" fill="#166534">flight.assigned_gate = gate_id</text>
+  <text x="315" y="783" text-anchor="middle" font-size="11.5" font-weight="600" fill="#166534">gate.gate_status = OCCUPIED  (async with board.lock)</text>
+
+  <path d="M315,805 L315,825" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="75" y="825" width="480" height="60" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="315" y="846" text-anchor="middle" font-size="10.5" fill="#334155">+ Conflict(resolved) &amp; board.log_decision("gate_assignment")</text>
+  <text x="315" y="863" text-anchor="middle" font-size="10.5" fill="#334155">losers each get a "conflict_resolved" decision_log entry</text>
+
+  <!-- ===== Crew panel ===== -->
+  <rect x="615" y="320" width="550" height="590" rx="14" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="890" y="350" text-anchor="middle" font-size="15" font-weight="700" fill="#4c1d95">Crew Conflict Resolution</text>
+  <text x="890" y="368" text-anchor="middle" font-size="11" fill="#7c3aed">contest happens PER crew_id, not per whole proposal</text>
+
+  <rect x="650" y="385" width="480" height="55" rx="8" fill="#ffffff" stroke="#c4b5fd" stroke-width="1.5"/>
+  <text x="890" y="405" text-anchor="middle" font-size="11.5" fill="#4c1d95">Map every requested crew_id →</text>
+  <text x="890" y="421" text-anchor="middle" font-size="11.5" fill="#4c1d95">list of proposals that want that specific person</text>
+
+  <path d="M890,440 L890,460" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <polygon points="890,460 1010,505 890,550 770,505" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+  <text x="890" y="500" text-anchor="middle" font-size="11.5" fill="#713f12">crew_id wanted by</text>
+  <text x="890" y="516" text-anchor="middle" font-size="11.5" fill="#713f12">2+ proposals?</text>
+
+  <path d="M1010,505 L1065,505" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="1038" y="495" text-anchor="middle" font-size="10.5" fill="#64748b">no</text>
+  <rect x="1065" y="483" width="80" height="44" rx="22" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="1105" y="501" text-anchor="middle" font-size="9.5" fill="#166534">sole</text>
+  <text x="1105" y="515" text-anchor="middle" font-size="9.5" fill="#166534">requester</text>
+
+  <path d="M890,550 L890,575" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="910" y="567" font-size="10.5" fill="#64748b">yes</text>
+
+  <rect x="790" y="575" width="200" height="70" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+  <text x="890" y="597" text-anchor="middle" font-size="11" font-weight="700" fill="#7f1d1d">decide_conflict</text>
+  <text x="890" y="612" text-anchor="middle" font-size="11" font-weight="700" fill="#7f1d1d">_resolution() (LLM)</text>
+  <text x="890" y="629" text-anchor="middle" font-size="9.5" fill="#991b1b">picks who gets THIS</text>
+  <text x="890" y="640" text-anchor="middle" font-size="9.5" fill="#991b1b">one crew_id only</text>
+
+  <path d="M1105,527 L1105,680 L890,680" stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M890,645 L890,680" stroke="#475569" stroke-width="2" fill="none"/>
+
+  <rect x="650" y="680" width="480" height="60" rx="8" fill="#ffffff" stroke="#c4b5fd" stroke-width="1.5"/>
+  <text x="890" y="700" text-anchor="middle" font-size="11" fill="#4c1d95">all contested crew_ids resolved up front →</text>
+  <text x="890" y="716" text-anchor="middle" font-size="11" fill="#4c1d95">winner_proposal_id_by_crew_id lookup built</text>
+  <text x="890" y="732" text-anchor="middle" font-size="10.5" fill="#7c3aed" font-style="italic">then: each flight keeps only crew_ids it actually won</text>
+
+  <path d="M890,740 L890,760" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="650" y="760" width="480" height="60" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="890" y="782" text-anchor="middle" font-size="11.5" font-weight="600" fill="#166534">flight.assigned_crew = available_ids</text>
+  <text x="890" y="798" text-anchor="middle" font-size="11.5" font-weight="600" fill="#166534">crew_member.available = False  (async with board.lock)</text>
+
+  <path d="M890,820 L890,840" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="650" y="840" width="480" height="45" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="890" y="858" text-anchor="middle" font-size="10.5" fill="#334155">if none available: unresolved Conflict "no unclaimed crew"</text>
+  <text x="890" y="874" text-anchor="middle" font-size="10.5" fill="#334155">+ board.log_decision("crew_reassigned")</text>
+
+  <!-- Schedule & Disruption mini panels -->
+  <rect x="40" y="940" width="550" height="140" rx="12" fill="#ecfeff" stroke="#0891b2" stroke-width="2"/>
+  <text x="315" y="970" text-anchor="middle" font-size="14" font-weight="700" fill="#155e75">Schedule Updates</text>
+  <text x="315" y="995" text-anchor="middle" font-size="11.5" fill="#0e7490">Direct write per proposal — 1 flight can only have</text>
+  <text x="315" y="1013" text-anchor="middle" font-size="11.5" fill="#0e7490">1 status, so no contention is possible here.</text>
+  <text x="315" y="1031" text-anchor="middle" font-size="11.5" fill="#0e7490">Updates status / actual_arrival / actual_departure.</text>
+  <text x="315" y="1057" text-anchor="middle" font-size="10.5" fill="#0891b2" font-style="italic">delay_risk_flag=True → "delay_risk_flagged" log entry</text>
+
+  <rect x="615" y="940" width="550" height="140" rx="12" fill="#fff7ed" stroke="#ea580c" stroke-width="2"/>
+  <text x="890" y="970" text-anchor="middle" font-size="14" font-weight="700" fill="#7c2d12">Disruption Resolution</text>
+  <text x="890" y="995" text-anchor="middle" font-size="11.5" fill="#9a3412">Looks up the LIVE disruption by event_id (never the</text>
+  <text x="890" y="1013" text-anchor="middle" font-size="11.5" fill="#9a3412">detached snapshot copy). Marks resolved once every</text>
+  <text x="890" y="1031" text-anchor="middle" font-size="11.5" fill="#9a3412">affected flight has assigned_gate again.</text>
+  <text x="890" y="1057" text-anchor="middle" font-size="10.5" fill="#ea580c" font-style="italic">logs "disruption_resolved" or "disruption_monitored"</text>
+
+  <!-- Return -->
+  <path d="M600,1080 L600,1115" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="350" y="1115" width="500" height="55" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2.5"/>
+  <text x="600" y="1140" text-anchor="middle" font-size="13" font-weight="700" fill="#78350f">return {"board": board}</text>
+  <text x="600" y="1157" text-anchor="middle" font-size="10.5" fill="#92400e">board is the live object, already mutated in place above</text>
+
+  <path d="M600,1170 L600,1205" stroke="#b45309" stroke-width="2.5" fill="none" marker-end="url(#arrowWrite)"/>
+  <rect x="490" y="1205" width="220" height="45" rx="22" fill="#334155"/>
+  <text x="600" y="1233" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">END (of tick)</text>
+
+  <!-- Legend / correctness note -->
+  <rect x="115" y="1285" width="970" height="150" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="600" y="1315" text-anchor="middle" font-size="14" font-weight="700" fill="#0f172a">Correctness note baked into every write above</text>
+  <text x="600" y="1340" text-anchor="middle" font-size="11.5" fill="#334155">Proposals carry flight_ids / gate_ids / crew_ids (not live object references) — the 4 agents only ever</text>
+  <text x="600" y="1358" text-anchor="middle" font-size="11.5" fill="#334155">saw the detached read-only snapshot. Every write here looks the object up fresh in state.board by id.</text>
+  <text x="600" y="1376" text-anchor="middle" font-size="11.5" fill="#334155">Nothing ever mutates state.snapshot or an object embedded in a proposal — those are stale copies.</text>
+  <text x="600" y="1400" text-anchor="middle" font-size="11.5" fill="#b45309" font-weight="600">Every mutation is wrapped in "async with board.lock" — Orchestrator is the ONLY node with write access.</text>
+
+  <text x="600" y="1470" text-anchor="middle" font-size="11" fill="#94a3b8">airport-ops · agents/orchestrator.py</text>
+</svg>
